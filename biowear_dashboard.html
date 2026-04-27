@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PRO BioWear Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #09090b;
+      --surface: #18181b;
+      --surface-hover: #27272a;
+      --border: #27272a;
+      --text: #fafafa;
+      --text-muted: #a1a1aa;
+      --primary: #fbbf24; /* Amber/Gold */
+      --primary-glow: rgba(251, 191, 36, 0.4);
+      --danger: #f87171;
+      --danger-glow: rgba(248, 113, 113, 0.4);
+      --success: #34d399;
+      --success-glow: rgba(52, 211, 153, 0.4);
+      --info: #38bdf8;
+      --info-glow: rgba(56, 189, 248, 0.4);
+      --purple: #c084fc;
+      --purple-glow: rgba(192, 132, 252, 0.4);
+      
+      --radius: 16px;
+      --transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background-image: 
+        radial-gradient(circle at 15% 50%, rgba(251, 191, 36, 0.05), transparent 25%),
+        radial-gradient(circle at 85% 30%, rgba(56, 189, 248, 0.05), transparent 25%);
+      overflow-x: hidden;
+    }
+    
+    /* Header */
+    header {
+      padding: 1.5rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      background: rgba(24, 24, 27, 0.6);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+    }
+    
+    .brand {
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.05em;
+      background: linear-gradient(135deg, #fff 0%, #a1a1aa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    
+    .brand::before {
+      content: '';
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--primary);
+      box-shadow: 0 0 10px var(--primary-glow);
+    }
+    
+    .status-container {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+    
+    .device-id {
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      padding: 0.4rem 0.8rem;
+      background: var(--surface);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    
+    .live-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 1rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      transition: var(--transition);
+      background: rgba(248, 113, 113, 0.1);
+      color: var(--danger);
+      border: 1px solid rgba(248, 113, 113, 0.2);
+    }
+    
+    .live-badge.active {
+      background: rgba(52, 211, 153, 0.1);
+      color: var(--success);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+      box-shadow: 0 0 15px rgba(52, 211, 153, 0.1);
+    }
+    
+    .live-badge.active::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+    }
+    
+    /* Layout */
+    .container {
+      padding: 2rem;
+      max-width: 1600px;
+      margin: 0 auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+      flex: 1;
+    }
+    
+    /* KPI Grid */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.5rem;
+    }
+    
+    .kpi-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      position: relative;
+      overflow: hidden;
+      transition: var(--transition);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 140px;
+    }
+    
+    .kpi-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    }
+    
+    .kpi-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--kpi-color, var(--text-muted));
+      opacity: 0.5;
+    }
+    
+    .kpi-card.has-data::after {
+      opacity: 1;
+      box-shadow: 0 0 15px var(--kpi-glow, transparent);
+    }
+    
+    .kpi-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+    }
+    
+    .kpi-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .kpi-value-container {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+    
+    .kpi-value {
+      font-size: 2.5rem;
+      font-weight: 800;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text);
+      line-height: 1;
+    }
+    
+    .kpi-unit {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+    
+    .kpi-card.has-data .kpi-value {
+      color: var(--kpi-color);
+      text-shadow: 0 0 20px var(--kpi-glow);
+    }
+    
+    .badge {
+      font-size: 0.65rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    
+    .badge.success { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+    .badge.error { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+    .badge.warning { background: rgba(251, 191, 36, 0.15); color: var(--primary); }
+    
+    /* Main Content Area */
+    .dashboard-layout {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 1.5rem;
+    }
+    
+    @media (max-width: 1024px) {
+      .dashboard-layout { grid-template-columns: 1fr; }
+    }
+    
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+    
+    .panel-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    
+    .panel-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    
+    .chart-container {
+      position: relative;
+      flex: 1;
+      min-height: 250px;
+      width: 100%;
+    }
+    
+    /* Log Table */
+    .log-container {
+      flex: 1;
+      overflow-y: auto;
+      max-height: 400px;
+      padding-right: 0.5rem;
+    }
+    
+    .log-container::-webkit-scrollbar { width: 6px; }
+    .log-container::-webkit-scrollbar-track { background: transparent; }
+    .log-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    
+    .log-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+    }
+    
+    .log-table th {
+      text-align: left;
+      padding: 0.75rem 0.5rem;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--surface);
+      z-index: 10;
+    }
+    
+    .log-table td {
+      padding: 0.75rem 0.5rem;
+      border-bottom: 1px solid rgba(39, 39, 42, 0.5);
+      color: var(--text);
+    }
+    
+    .log-table tr {
+      transition: background-color 0.2s;
+    }
+    
+    .log-table tr:hover {
+      background-color: var(--surface-hover);
+    }
+    
+    .log-table tr.new-row {
+      animation: highlight 2s ease-out;
+    }
+    
+    @keyframes highlight {
+      0% { background-color: rgba(251, 191, 36, 0.2); }
+      100% { background-color: transparent; }
+    }
+    
+    .val-low { color: var(--danger); }
+    .val-high { color: var(--purple); }
+    .val-ok { color: var(--success); }
+    
+    /* Finger Overlay */
+    .overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(9, 9, 11, 0.85);
+      backdrop-filter: blur(10px);
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.4s ease;
+    }
+    
+    .overlay.visible {
+      opacity: 1;
+      pointer-events: all;
+    }
+    
+    .finger-icon {
+      font-size: 5rem;
+      margin-bottom: 1.5rem;
+      animation: float 3s ease-in-out infinite;
+      filter: drop-shadow(0 0 20px rgba(251, 191, 36, 0.5));
+    }
+    
+    @keyframes float {
+      0% { transform: translateY(0px) rotate(-5deg); }
+      50% { transform: translateY(-15px) rotate(5deg); }
+      100% { transform: translateY(0px) rotate(-5deg); }
+    }
+    
+    .overlay h2 {
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--primary);
+      margin-bottom: 0.5rem;
+    }
+    
+    .overlay p {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+    
+    /* Grid layout for secondary charts */
+    .secondary-charts {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+    }
+    
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <div class="brand">PRO BioWear</div>
+    <div class="status-container">
+      <div class="device-id" id="dev-id">Connecting...</div>
+      <div class="live-badge" id="live-status">Offline</div>
+    </div>
+  </header>
+
+  <div class="container">
+    
+    <!-- KPI Grid -->
+    <div class="kpi-grid">
+      <!-- Blood Pressure KPI -->
+      <div class="kpi-card" id="kpi-bp" style="--kpi-color: var(--danger); --kpi-glow: var(--danger-glow)">
+        <div class="kpi-header">
+          <span class="kpi-title">Blood Pressure</span>
+          <span class="badge warning" id="badge-bp">EST. via PTT</span>
+        </div>
+        <div class="kpi-value-container">
+          <span class="kpi-value" id="val-bp">--/--</span>
+          <span class="kpi-unit">mmHg</span>
+        </div>
+        <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
+          MAP: <span id="val-map">--</span> | PP: <span id="val-pp">--</span>
+        </div>
+      </div>
+      
+      <!-- Heart Rate KPI -->
+      <div class="kpi-card" id="kpi-hr" style="--kpi-color: var(--primary); --kpi-glow: var(--primary-glow)">
+        <div class="kpi-header">
+          <span class="kpi-title">Heart Rate</span>
+          <span class="badge" id="badge-hr">--</span>
+        </div>
+        <div class="kpi-value-container">
+          <span class="kpi-value" id="val-hr">--</span>
+          <span class="kpi-unit">BPM</span>
+        </div>
+      </div>
+      
+      <!-- SpO2 KPI -->
+      <div class="kpi-card" id="kpi-spo2" style="--kpi-color: var(--info); --kpi-glow: var(--info-glow)">
+        <div class="kpi-header">
+          <span class="kpi-title">SpO₂</span>
+          <span class="badge" id="badge-spo2">--</span>
+        </div>
+        <div class="kpi-value-container">
+          <span class="kpi-value" id="val-spo2">--</span>
+          <span class="kpi-unit">%</span>
+        </div>
+      </div>
+      
+      <!-- Temperature KPI -->
+      <div class="kpi-card has-data" id="kpi-temp" style="--kpi-color: var(--success); --kpi-glow: var(--success-glow)">
+        <div class="kpi-header">
+          <span class="kpi-title">Body Temp</span>
+          <span class="badge success">DS18B20</span>
+        </div>
+        <div class="kpi-value-container">
+          <span class="kpi-value" id="val-temp">--</span>
+          <span class="kpi-unit">°C</span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Main Charts + Logging Area -->
+    <div class="dashboard-layout">
+      <!-- Big Chart -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Real-Time Hemodynamics</span>
+          <span class="panel-subtitle">Continuous Blood Pressure & Heart Rate (last 60s)</span>
+        </div>
+        <div class="chart-container">
+          <canvas id="mainChart"></canvas>
+        </div>
+      </div>
+      
+      <!-- Data Log -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Data Stream Log</span>
+          <span class="panel-subtitle">Live endpoint metrics</span>
+        </div>
+        <div class="log-container">
+          <table class="log-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>BP (mmHg)</th>
+                <th>HR</th>
+                <th>SpO₂</th>
+                <th>Temp</th>
+              </tr>
+            </thead>
+            <tbody id="log-body">
+              <!-- Logs inserted via JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Secondary Charts -->
+    <div class="secondary-charts">
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Blood Oxygen Level</span>
+          <span class="panel-subtitle">SpO₂ % (last 60s)</span>
+        </div>
+        <div class="chart-container" style="min-height: 180px;">
+          <canvas id="spo2Chart"></canvas>
+        </div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Pulse Transit Time</span>
+          <span class="panel-subtitle">PTT ms (last 60s)</span>
+        </div>
+        <div class="chart-container" style="min-height: 180px;">
+          <canvas id="pttChart"></canvas>
+        </div>
+      </div>
+      
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Body Temperature</span>
+          <span class="panel-subtitle">°C (last 60s)</span>
+        </div>
+        <div class="chart-container" style="min-height: 180px;">
+          <canvas id="tempChart"></canvas>
+        </div>
+      </div>
+    </div>
+    
+  </div>
+  
+  <!-- Overlay -->
+  <div class="overlay" id="finger-overlay">
+    <div class="finger-icon">☝️</div>
+    <h2>Finger Removed</h2>
+    <p>Please place your finger on the MAX30102 sensor.</p>
+  </div>
+
+  <script>
+    // --- Configuration ---
+    const API_BASE = 'https://biowear.onrender.com';
+    const POLL_INTERVAL = 1000;
+    const MAX_CHART_POINTS = 60;
+    
+    // --- Chart Defaults ---
+    Chart.defaults.color = '#a1a1aa';
+    Chart.defaults.font.family = "'Inter', sans-serif";
+    
+    const commonOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 0 },
+      spanGaps: true, // IMPORTANT rule: draw line correctly even if data is missing/null temporarily
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(24, 24, 27, 0.9)',
+          titleColor: '#fafafa',
+          bodyColor: '#a1a1aa',
+          borderColor: '#27272a',
+          borderWidth: 1,
+          padding: 10,
+          cornerRadius: 8,
+          displayColors: true
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { maxTicksLimit: 6 }
+        },
+        y: {
+          grid: { color: 'rgba(39, 39, 42, 0.5)' },
+          border: { display: false }
+        }
+      }
+    };
+
+    // --- Initialize Charts ---
+    const ctxMain = document.getElementById('mainChart').getContext('2d');
+    const chartMain = new Chart(ctxMain, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Systolic BP (mmHg)',
+            data: [],
+            borderColor: '#f87171',
+            backgroundColor: 'rgba(248, 113, 113, 0.1)',
+            borderWidth: 2,
+            tension: 0.4,
+            pointRadius: 0
+          },
+          {
+            label: 'Diastolic BP (mmHg)',
+            data: [],
+            borderColor: '#c084fc',
+            backgroundColor: 'rgba(192, 132, 252, 0.1)',
+            borderWidth: 2,
+            tension: 0.4,
+            pointRadius: 0
+          },
+          {
+            label: 'Heart Rate (BPM)',
+            data: [],
+            borderColor: '#fbbf24',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            tension: 0.4,
+            pointRadius: 0
+          }
+        ]
+      },
+      options: {
+        ...commonOptions,
+        plugins: {
+          ...commonOptions.plugins,
+          legend: { display: true, position: 'top', align: 'end' }
+        },
+        scales: {
+          x: commonOptions.scales.x,
+          y: { ...commonOptions.scales.y, min: 40, max: 200 }
+        }
+      }
+    });
+
+    const ctxSpo2 = document.getElementById('spo2Chart').getContext('2d');
+    const chartSpo2 = new Chart(ctxSpo2, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'SpO₂ %', data: [], borderColor: '#38bdf8', borderWidth: 2, tension: 0.4, pointRadius: 0 }] },
+      options: { ...commonOptions, scales: { x: commonOptions.scales.x, y: { ...commonOptions.scales.y, min: 80, max: 100 } } }
+    });
+
+    const ctxPtt = document.getElementById('pttChart').getContext('2d');
+    const chartPtt = new Chart(ctxPtt, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'PTT (ms)', data: [], borderColor: '#a1a1aa', borderWidth: 2, tension: 0.4, pointRadius: 0 }] },
+      options: { ...commonOptions, scales: { x: commonOptions.scales.x, y: { ...commonOptions.scales.y } } }
+    });
+
+    const ctxTemp = document.getElementById('tempChart').getContext('2d');
+    const chartTemp = new Chart(ctxTemp, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'Body Temp °C', data: [], borderColor: '#34d399', borderWidth: 2, fill: true, backgroundColor: 'rgba(52, 211, 153, 0.1)', tension: 0.4, pointRadius: 0 }] },
+      options: { ...commonOptions, scales: { x: commonOptions.scales.x, y: { ...commonOptions.scales.y, min: 32, max: 42 } } }
+    });
+
+    // --- Helper Functions ---
+    const $ = id => document.getElementById(id);
+    
+    function updateBudge(id, valid, isOk = 'Valid', isBad = 'Error') {
+      const el = $(id);
+      el.textContent = valid ? isOk : isBad;
+      el.className = `badge ${valid ? 'success' : 'error'}`;
+    }
+
+    function addDataToChart(chart, label, ...values) {
+      chart.data.labels.push(label);
+      values.forEach((v, i) => {
+        chart.data.datasets[i].data.push(v);
+      });
+      
+      if (chart.data.labels.length > MAX_CHART_POINTS) {
+        chart.data.labels.shift();
+        chart.data.datasets.forEach(d => d.data.shift());
+      }
+      chart.update();
+    }
+
+    function formatTime(isoString) {
+      const d = isoString ? new Date(isoString) : new Date();
+      return d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit' });
+    }
+
+    function renderLog(r) {
+      const tbody = $('log-body');
+      const tr = document.createElement('tr');
+      tr.className = 'new-row';
+      
+      const time = formatTime(r.server_time);
+      const bpStr = r.bp_valid && r.sbp != null && r.dbp != null ? `${r.sbp}/${r.dbp}` : (r.ptt_ms ? 'CALC ERR' : 'NO PTT');
+      const hrStr = r.bpm_valid ? r.bpm : '---';
+      const spo2Str = r.spo2_valid ? r.spo2 + '%' : '---';
+      const tempStr = r.temp_body_c != null ? r.temp_body_c.toFixed(1) : '---';
+
+      tr.innerHTML = `
+        <td>${time}</td>
+        <td class="${r.bp_valid ? 'val-ok' : 'val-low'}">${bpStr}</td>
+        <td>${hrStr}</td>
+        <td>${spo2Str}</td>
+        <td>${tempStr}</td>
+      `;
+      
+      tbody.prepend(tr);
+      
+      if (tbody.children.length > 50) {
+        tbody.removeChild(tbody.lastChild);
+      }
+    }
+
+    // --- Main Poll Loop ---
+    let failCount = 0;
+    let wasOffline = true;
+
+    async function fetchData() {
+      try {
+        const res = await fetch(`${API_BASE}/readings/latest`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const r = await res.json();
+        
+        failCount = 0;
+        
+        if (wasOffline) {
+          $('live-status').textContent = 'Live';
+          $('live-status').classList.add('active');
+          wasOffline = false;
+        }
+
+        // Handle the offline finger problem properly:
+        // Only show finger overlay IF we have connection AND finger flag is explicitly false.
+        // Don't show it forever if we simply lose connection.
+        if (r.finger_detected === false) {
+          $('finger-overlay').classList.add('visible');
+        } else {
+          $('finger-overlay').classList.remove('visible');
+        }
+
+        // Update Headers
+        $('dev-id').textContent = r.device_id || 'Unknown Device';
+
+        // Update BP KPI
+        const hasBp = r.bp_valid && r.sbp != null && r.dbp != null;
+        $('kpi-bp').classList.toggle('has-data', hasBp);
+        if (hasBp) {
+          $('val-bp').textContent = `${r.sbp}/${r.dbp}`;
+          $('val-map').textContent = r.map;
+          $('val-pp').textContent = r.pulse_pressure;
+        } else {
+          $('val-bp').textContent = '--/--';
+          $('val-map').textContent = '--';
+          $('val-pp').textContent = '--';
+        }
+
+        // Update HR KPI
+        const hasHr = r.bpm_valid && r.bpm > 0;
+        $('kpi-hr').classList.toggle('has-data', hasHr);
+        $('val-hr').textContent = hasHr ? r.bpm : '--';
+        updateBudge('badge-hr', r.bpm_valid, 'Detecting', 'No Signal');
+
+        // Update SpO2 KPI
+        const hasSpo2 = r.spo2_valid && r.spo2 > 0;
+        $('kpi-spo2').classList.toggle('has-data', hasSpo2);
+        $('val-spo2').textContent = hasSpo2 ? r.spo2.toFixed(1) : '--';
+        updateBudge('badge-spo2', r.spo2_valid, 'Detecting', 'No Signal');
+
+        // Update Temp KPI
+        const temp = r.temp_body_c != null ? r.temp_body_c.toFixed(1) : '--';
+        $('val-temp').textContent = temp;
+
+        // Add to Charts
+        const ts = formatTime(r.server_time);
+        
+        // Pass null if invalid, Chart.js spanGaps handles it beautifully
+        addDataToChart(chartMain, ts, 
+          hasBp ? r.sbp : null, 
+          hasBp ? r.dbp : null, 
+          hasHr ? r.bpm : null
+        );
+        
+        addDataToChart(chartSpo2, ts, hasSpo2 ? r.spo2 : null);
+        addDataToChart(chartPtt, ts, r.ptt_ms != null ? r.ptt_ms : null);
+        addDataToChart(chartTemp, ts, r.temp_body_c != null ? r.temp_body_c : null);
+
+        // Add to Log Table
+        renderLog(r);
+
+      } catch (err) {
+        failCount++;
+        if (failCount > 3) {
+          $('live-status').textContent = 'Offline';
+          $('live-status').classList.remove('active');
+          // Important: remove the finger overlay when offline so it isn't stuck!
+          $('finger-overlay').classList.remove('visible');
+          wasOffline = true;
+          console.error("Connection lost:", err);
+        }
+      }
+    }
+
+    // Attempt to backfill the last 60s
+    async function backfill() {
+      try {
+        const res = await fetch(`${API_BASE}/readings/realtime`);
+        if (res.ok) {
+          const events = await res.json();
+          // Clear current data just in case
+          chartMain.data.labels = []; chartMain.data.datasets.forEach(d => d.data = []);
+          chartSpo2.data.labels = []; chartSpo2.data.datasets.forEach(d => d.data = []);
+          chartPtt.data.labels = []; chartPtt.data.datasets.forEach(d => d.data = []);
+          chartTemp.data.labels = []; chartTemp.data.datasets.forEach(d => d.data = []);
+          
+          events.forEach(r => {
+            const hasBp = r.bp_valid && r.sbp != null && r.dbp != null;
+            const hasHr = r.bpm_valid && r.bpm > 0;
+            const hasSpo2 = r.spo2_valid && r.spo2 > 0;
+            const ts = formatTime(r.server_time);
+            
+            chartMain.data.labels.push(ts);
+            chartMain.data.datasets[0].data.push(hasBp ? r.sbp : null);
+            chartMain.data.datasets[1].data.push(hasBp ? r.dbp : null);
+            chartMain.data.datasets[2].data.push(hasHr ? r.bpm : null);
+            
+            chartSpo2.data.labels.push(ts);
+            chartSpo2.data.datasets[0].data.push(hasSpo2 ? r.spo2 : null);
+            
+            chartPtt.data.labels.push(ts);
+            chartPtt.data.datasets[0].data.push(r.ptt_ms != null ? r.ptt_ms : null);
+            
+            chartTemp.data.labels.push(ts);
+            chartTemp.data.datasets[0].data.push(r.temp_body_c != null ? r.temp_body_c : null);
+          });
+          chartMain.update();
+          chartSpo2.update();
+          chartPtt.update();
+          chartTemp.update();
+        }
+      } catch (err) {
+        console.log("Backfill attempt failed", err);
+      }
+    }
+
+    // Run
+    backfill().then(() => {
+      setInterval(fetchData, POLL_INTERVAL);
+    });
+
+  </script>
+</body>
+</html>

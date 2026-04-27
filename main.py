@@ -63,8 +63,8 @@ DEFAULT_CAL = {
     "dbp_intercept":  130.0,
 }
 
-PTT_MIN_MS = 100
-PTT_MAX_MS = 600
+PTT_MIN_MS = 300
+PTT_MAX_MS = 1500
 
 # ─── App ─────────────────────────────────────────────────────────────────────
 app = FastAPI(title="HealthMonitor API", version="2.0.0")
