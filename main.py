@@ -213,5 +213,5 @@ async def get_calibrations():
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    with open("browser_dashboard.html", "r") as f:
+    with open("biowear_dashboard.html", "r") as f:
         return f.read()
