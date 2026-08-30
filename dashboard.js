@@ -1,5 +1,5 @@
 // Global API Configuration
-const API_BASE_URL = 'https://elaborate-flavorful-virtuous.ngrok-free.dev';
+const API_BASE_URL = 'https://medical-triage-v2.onrender.com';
 let currentDoctor = null;
 
 /**
@@ -293,7 +293,7 @@ async function fetchQueue() {
     if (!res.ok) return;
     const data = await res.json();
     renderQueue(data.queue || []);
-  } catch (e) {}
+  } catch (e) { }
 }
 
 function renderQueue(queue) {
