@@ -315,12 +315,15 @@ function renderQueue(queue) {
     const rawScore = p.acuity?.raw_score || 0;
     const status = p.status || 'TRIAGED';
     const statusClass = `status-${status.toLowerCase()}`;
+    const deviceBadge = p.device_id
+      ? `<span style="font-size:0.7rem; color:var(--sky); background:rgba(56,189,248,0.1); padding:0.15rem 0.4rem; border-radius:4px; margin-left:0.4rem;"><i class="fa-solid fa-microchip"></i> ${p.device_id}</span>`
+      : '';
 
     return `
       <tr>
         <td>
           <div class="patient-name">${name}</div>
-          <div class="patient-id-tag">${p.patient_id}</div>
+          <div class="patient-id-tag">${p.patient_id}${deviceBadge}</div>
         </td>
         <td>
           <span class="esi-tag esi-${esi}">
@@ -377,8 +380,10 @@ async function handleIntakeSubmit(e) {
 
   const symptoms = Array.from(document.querySelectorAll('input[name="symptom"]:checked')).map(el => el.value);
   const history = Array.from(document.querySelectorAll('input[name="history"]:checked')).map(el => el.value);
+  const assignedDevice = document.getElementById("assignedDeviceId")?.value || null;
 
   const payload = {
+    device_id: assignedDevice,
     patient_details: {
       first_name: document.getElementById("firstName").value,
       last_name: document.getElementById("lastName").value,
@@ -426,6 +431,7 @@ async function viewPatientDetail(pId) {
     const esi = p.acuity?.esi_level || 5;
     const factors = p.acuity?.contributing_factors || [];
     const status = p.status || 'TRIAGED';
+    const assignedDev = p.device_id || 'Unassigned';
 
     let markdownHTML = (p.medical_summary || '')
       .replace(/### (.*?)\n/g, '<h3>$1</h3>')
@@ -440,6 +446,9 @@ async function viewPatientDetail(pId) {
           </span>
           <span class="status-tag status-${status.toLowerCase()}" style="font-size: 0.8rem; padding: 0.35rem 0.75rem;">
             Status: ${status.replace('_', ' ')}
+          </span>
+          <span style="font-size: 0.8rem; padding: 0.35rem 0.75rem; background: rgba(56,189,248,0.1); color: var(--sky); border-radius: 4px; border: 1px solid rgba(56,189,248,0.2);">
+            IoT Sensor Device: <strong>${assignedDev}</strong>
           </span>
         </div>
         <span style="color: var(--text-muted); font-size: 0.82rem;">
@@ -462,9 +471,20 @@ async function viewPatientDetail(pId) {
             </select>
           </div>
           <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Clinical Action Notes</label>
-            <input type="text" id="adminDoctorNotes" class="form-input" placeholder="e.g. Administered IV fluids..." value="${p.doctor_notes || ''}">
+            <label class="form-label">Assign / Reassign IoT Sensor</label>
+            <div style="display: flex; gap: 0.5rem;">
+              <select id="adminAssignDevice" class="form-select">
+                <option value="esp32-01" ${p.device_id === 'esp32-01' ? 'selected' : ''}>esp32-01</option>
+                <option value="esp32-02" ${p.device_id === 'esp32-02' ? 'selected' : ''}>esp32-02</option>
+                <option value="esp32-03" ${p.device_id === 'esp32-03' ? 'selected' : ''}>esp32-03</option>
+              </select>
+              <button class="btn-secondary" style="font-size:0.75rem;" onclick="assignDeviceToPatient('${p.patient_id}')">Bind</button>
+            </div>
           </div>
+        </div>
+        <div class="form-group" style="margin-top: 0.75rem; margin-bottom: 0;">
+          <label class="form-label">Clinical Action Notes</label>
+          <input type="text" id="adminDoctorNotes" class="form-input" placeholder="e.g. Administered IV fluids..." value="${p.doctor_notes || ''}">
         </div>
         <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1rem;">
           <button class="btn-secondary" id="btnDischargeRecord" style="color: var(--crimson); border-color: rgba(248,113,113,0.3);" onclick="dischargePatientRecord('${p.patient_id}')">
@@ -475,6 +495,7 @@ async function viewPatientDetail(pId) {
           </button>
         </div>
       </div>
+
 
       <div style="margin-bottom: 1rem;">
         <strong>Contributing Clinical Factors:</strong>
@@ -760,3 +781,28 @@ async function triggerFingerSimulation() {
     setButtonLoading(btn, false);
   }
 }
+
+async function assignDeviceToPatient(pId) {
+  const deviceId = document.getElementById("adminAssignDevice")?.value;
+  if (!deviceId) return;
+
+  try {
+    const res = await apiFetch('/api/sessions/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_id: pId, device_id: deviceId })
+    });
+
+    if (res.ok) {
+      alert(`IoT Device ${deviceId} bound to patient ${pId}.`);
+      closeSummaryModal();
+      fetchQueue();
+      viewPatientDetail(pId);
+    } else {
+      alert("Failed to bind device.");
+    }
+  } catch (e) {
+    alert("Error binding device.");
+  }
+}
+

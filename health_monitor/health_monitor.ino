@@ -1,43 +1,41 @@
 /*
-  HealthMonitor ESP32 Firmware — v3.1 (SpO2 acquisition fix)
+  HealthMonitor ESP32 Firmware — v3.4 (live finger detection + HR reset fix)
   ─────────────────────────────────────────────────────────────────────────────
-  What changed vs v3.0, and why:
+  What changed vs v3.3:
 
-    - ROOT CAUSE OF SpO2=0(??):
-        The old acquisition loop wrote red=0/ir=0 into the 100-sample buffer
-        whenever a single sample read failed (I2C hiccup, FIFO underrun, etc).
-        Even a handful of zero entries in that window is enough for
-        maxim_heart_rate_and_oxygen_saturation() to reject the whole result.
-        HR still "worked" because the beat detector only looks at real,
-        nonzero IR samples as they arrive — it never saw the zeros directly.
+    - BUG 1 — finger detection got stuck on YES after removing the finger
+      until a manual reset:
+        Finger detection and the reported raw IR/RED values were read from
+        irBuffer[BUFFER_SIZE-1] / redBuffer[BUFFER_SIZE-1]. Those slots are
+        ONLY written when a full 25-sample batch finishes inside
+        acquireFreshSamples(). Once the finger comes off, samples arrive
+        erratically and a full batch may never complete again — so that
+        slot just freezes at the last high value from when the finger WAS
+        present, permanently reporting finger=YES.
+
+    - BUG 2 — heart rate kept "measuring" with no finger on, while SpO2
+      correctly stayed invalid:
+        processBeat() had no finger-presence gate at all — any nonzero
+        IR sample (including low-amplitude ambient noise well below
+        FINGER_IR_THRESHOLD) was fed to the beat detector, and the
+        running beatAvg was never reset, so it kept reporting a stale/
+        fabricated average indefinitely.
 
     - FIX:
-        A failed/zero sample is now retried instead of written to the buffer.
-        The buffer only ever contains real RED+IR pairs. Collection of the
-        FRESH_SAMPLES batch is bounded by a wall-clock budget so a removed
-        finger (or dead sensor) can't hang the main loop — if the budget
-        expires before a full batch is collected, that cycle is marked
-        incomplete and vitals are NOT recalculated from a stale/partial
-        buffer (previous valid values are held, and invalid flags are set
-        if there's no finger signal at all).
+        A new lastLiveIR/lastLiveRed pair is updated on every single
+        successful real sample (not just on full-batch completion), and
+        finger detection + raw reporting now use that instead of the
+        batch-tail buffer slot — so finger status flips to NO within one
+        sample of actually losing signal. Beat detection is now gated on
+        that same live finger-presence check: below threshold, the beat/
+        rate-averaging state is actively reset (resetBeatState()) instead
+        of computing from noise. The stall watchdog also zeroes
+        lastLiveIR/lastLiveRed when it fires, so a fully dead signal (not
+        just sub-threshold noise) forces finger=NO within ~1.5s instead of
+        requiring a manual reset.
 
-    - sampleAverage changed 4 -> 1: the library's internal averaging was
-      compounding with the app-level windowing and degrading the RED/IR
-      relationship the SpO2 math depends on.
-
-    - RED is now sampled, timeout-guarded, logged (serial + API) and
-      validated with the same rigor as IR — previously only IR was ever
-      surfaced, so a dead RED channel would have been invisible.
-
-    - Raw algorithm output (before range/validity normalization) is logged
-      so a "library says invalid" failure can be told apart from a
-      "we discarded a valid result" bug.
-
-    - Wi-Fi never causes an ESP32 restart
-    - MAX30102 never blocks indefinitely (bounded retry, not infinite)
-    - I2C has a timeout
-    - API failures do not crash the firmware
-    - Automatic Wi-Fi reconnection
+  (v3.3 dual-core networking fix, v3.2 non-blocking DS18B20 fix, and v3.1
+  SpO2 acquisition fix retained unchanged below.)
 */
 
 #define WIFI_SSID      "mayberry"
@@ -84,6 +82,9 @@
 // ─── Finger detection ────────────────────────────────────────────────────────
 #define FINGER_IR_THRESHOLD 50000UL
 
+// ─── DS18B20 async conversion ────────────────────────────────────────────────
+#define DS18B20_CONVERSION_MS 750     // 12-bit default conversion time
+
 // ─── Objects ──────────────────────────────────────────────────────────────────
 OneWire oneWire(DS18B20_PIN);
 DallasTemperature ds18b20(&oneWire);
@@ -121,6 +122,35 @@ bool bufferFullyPrimed = false;   // true once BUFFER_SIZE real samples have eve
 
 unsigned long lastPushTime = 0;
 
+// ─── Cross-core handoff (v3.3) ────────────────────────────────────────────────
+// Sensor acquisition + math run on core 1 (the normal Arduino loop).
+// Networking runs on its own task pinned to core 0 so a slow TLS
+// handshake or a Wi-Fi reconnect can never block the MAX30105 FIFO from
+// being drained in time. The struct below is the only thing shared
+// between the two cores; readingMutex guards every access to it.
+struct SensorReading {
+  float ds_c;
+  float max_c;
+  int32_t bpm;
+  int32_t spo2Val;
+  bool hrOk;
+  bool spo2Ok;
+  float pttMs;
+  uint32_t irRaw;
+  uint32_t redRaw;
+  bool bufferPrimed;
+  bool fingerDetected;
+};
+
+SensorReading latestReading = {0, 0, 0, 0, false, false, -1.0f, 0, 0, false, false};
+SemaphoreHandle_t readingMutex = nullptr;
+TaskHandle_t networkTaskHandle = nullptr;
+
+// ─── DS18B20 async state ─────────────────────────────────────────────────────
+bool ds18b20ConversionPending = false;
+unsigned long lastDS18B20RequestMs = 0;
+float cachedDsC = 0.0f;
+
 // ─── FIFO stall recovery ──────────────────────────────────────────────────────
 // If the FIFO's read/write pointers ever get desynced (I2C glitch, or an
 // ill-timed clearFIFO() mid-conversion), particleSensor.available() can get
@@ -130,6 +160,14 @@ unsigned long lastPushTime = 0;
 // causes the desync in the first place).
 #define STALL_RESYNC_MS   1500
 unsigned long lastRealSampleMs = 0;
+
+// ─── Live finger-presence tracking (v3.4) ────────────────────────────────────
+// Updated on every single successful real sample, independent of whether a
+// full FRESH_SAMPLES batch ever completes. Finger detection and raw
+// reporting use these instead of the batch-tail buffer slot, which could
+// freeze indefinitely once acquisition stopped completing full batches.
+uint32_t lastLiveIR  = 0;
+uint32_t lastLiveRed = 0;
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -149,6 +187,8 @@ bool acquireFreshSamples();   // returns true if a full batch of FRESH_SAMPLES w
 
 void processBeat(uint32_t ir);
 
+void resetBeatState();
+
 void calculateVitals();
 
 float readDS18B20();
@@ -161,8 +201,13 @@ void pushToAPI(
   bool hrOk,
   bool spo2Ok,
   float ptt,
-  uint32_t redRaw
+  uint32_t redRaw,
+  uint32_t irRaw,
+  bool fingerDetected,
+  bool bufferPrimed
 );
+
+void networkTask(void *param);
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -176,7 +221,7 @@ void setup() {
 
   Serial.println();
   Serial.println("================================");
-  Serial.println("     HealthMonitor ESP32 v3.1");
+  Serial.println("     HealthMonitor ESP32 v3.2");
   Serial.println("================================");
 
   // ── I2C ────────────────────────────────────────────────────────────────────
@@ -191,10 +236,23 @@ void setup() {
   // ── DS18B20 ────────────────────────────────────────────────────────────────
   ds18b20.begin();
 
+  // IMPORTANT: default DallasTemperature behavior BLOCKS for ~750ms on
+  // every requestTemperatures() call (waitForConversion defaults true).
+  // That blocked the whole loop() long enough for the MAX30105's FIFO to
+  // overflow, which is what was silently killing SpO2/HR every cycle.
+  // Disable blocking and drive conversions asynchronously instead.
+  ds18b20.setWaitForConversion(false);
+
   Serial.printf(
     "DS18B20 devices: %d\n",
     ds18b20.getDeviceCount()
   );
+
+  if (ds18b20.getDeviceCount() > 0) {
+    ds18b20.requestTemperatures();
+    lastDS18B20RequestMs = millis();
+    ds18b20ConversionPending = true;
+  }
 
   // ── MAX30102 ───────────────────────────────────────────────────────────────
   max30102Ready = initMAX30102();
@@ -204,6 +262,21 @@ void setup() {
   } else {
     Serial.println("MAX30102 unavailable. Vitals will remain invalid until it is detected.");
   }
+
+  // ── Cross-core handoff + network task ─────────────────────────────────────
+  // Pinned to core 0, away from the sensor-acquisition loop on core 1, so
+  // TLS handshakes / Wi-Fi reconnects can never stall FIFO draining.
+  readingMutex = xSemaphoreCreateMutex();
+
+  xTaskCreatePinnedToCore(
+    networkTask,
+    "networkTask",
+    8192,
+    NULL,
+    1,
+    &networkTaskHandle,
+    0
+  );
 
   Serial.println("Ready — streaming.");
 }
@@ -235,11 +308,14 @@ void loop() {
   // ───────────────────────────────────────────────────────────────────────────
   // 2. Acquire FRESH_SAMPLES real (nonzero) RED+IR pairs.
   //
-  // IMPORTANT (this is the actual SpO2 fix):
+  // IMPORTANT (this is the actual SpO2 fix from v3.1):
   // A failed or zero sample is retried, NOT written into the buffer.
   // Zeros in the window are what make the Maxim algorithm reject SpO2
   // outright even while HR keeps working. Collection is bounded by
   // MAX_ACQUIRE_TIME_MS so a missing finger can't hang the firmware.
+  //
+  // This can only actually succeed within budget if nothing else blocks
+  // the loop for hundreds of ms — see readDS18B20() below (v3.2 fix).
   // ───────────────────────────────────────────────────────────────────────────
 
   bool acquisitionComplete = acquireFreshSamples();
@@ -250,24 +326,37 @@ void loop() {
 
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 3. Calculate HR + SpO2 — only from a fully-real, fully-primed buffer.
+  // 2b. Live finger detection — based on the most recent real sample, not
+  // the (possibly stale, batch-gated) buffer tail. See lastLiveIR/lastLiveRed.
   // ───────────────────────────────────────────────────────────────────────────
 
-  if (acquisitionComplete && bufferFullyPrimed) {
+  bool fingerDetected = lastLiveIR >= FINGER_IR_THRESHOLD;
+
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 3. Calculate HR + SpO2 — only from a fully-real, fully-primed buffer,
+  // and only while a finger is actually detected live.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  if (acquisitionComplete && bufferFullyPrimed && fingerDetected) {
     calculateVitals();
   } else {
-    // Not enough real signal this cycle (finger just placed / removed,
-    // or sensor briefly unavailable). Don't compute from a stale/partial
-    // buffer — report invalid instead of a misleading stale number.
+    // No finger, not enough real signal this cycle, or sensor briefly
+    // unavailable. Don't compute from a stale/partial buffer or from
+    // sub-threshold noise — report invalid instead of a misleading number.
     spo2 = 0;
     heartRate = 0;
     validSPO2 = 0;
     validHR = 0;
+
+    if (!fingerDetected) {
+      resetBeatState();
+    }
   }
 
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 4. Temperatures
+  // 4. Temperatures — both non-blocking now.
   // ───────────────────────────────────────────────────────────────────────────
 
   float ds_c = readDS18B20();
@@ -280,15 +369,12 @@ void loop() {
 
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 5. Finger detection
+  // 5. (finger detection now computed live in step 2b above)
   // ───────────────────────────────────────────────────────────────────────────
-
-  bool fingerDetected =
-    irBuffer[BUFFER_SIZE - 1] >= FINGER_IR_THRESHOLD;
 
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 6. Serial output — RED is now printed alongside IR
+  // 6. Serial output
   // ───────────────────────────────────────────────────────────────────────────
 
   Serial.printf(
@@ -321,40 +407,105 @@ void loop() {
 
     fingerDetected ? "YES" : "NO",
 
-    (unsigned long)irBuffer[BUFFER_SIZE - 1],
-    (unsigned long)redBuffer[BUFFER_SIZE - 1],
+    (unsigned long)lastLiveIR,
+    (unsigned long)lastLiveRed,
 
     bufferFullyPrimed ? "YES" : "NO"
   );
 
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 7. Push API
+  // 7. Publish the latest reading for the network task to pick up.
+  //
+  // This ONLY writes a small struct under a mutex — it never does network
+  // I/O itself, so it can't block sensor acquisition. The actual HTTP push
+  // happens asynchronously on core 0 in networkTask() below.
   // ───────────────────────────────────────────────────────────────────────────
 
-  if (millis() - lastPushTime >= PUSH_INTERVAL_MS) {
+  int32_t bpm =
+    (beatAvg > 0)
+    ? beatAvg
+    : heartRate;
 
-    lastPushTime = millis();
+  if (readingMutex != nullptr &&
+      xSemaphoreTake(readingMutex, 0) == pdTRUE) {
 
-    int32_t bpm =
-      (beatAvg > 0)
-      ? beatAvg
-      : heartRate;
+    latestReading.ds_c        = ds_c;
+    latestReading.max_c       = max_c;
+    latestReading.bpm         = bpm;
+    latestReading.spo2Val     = spo2;
+    latestReading.hrOk        = validHR;
+    latestReading.spo2Ok      = validSPO2;
+    latestReading.pttMs       = pttMs;
+    latestReading.irRaw       = lastLiveIR;
+    latestReading.redRaw      = lastLiveRed;
+    latestReading.bufferPrimed = bufferFullyPrimed;
+    latestReading.fingerDetected = fingerDetected;
 
-    pushToAPI(
-      ds_c,
-      max_c,
-      bpm,
-      spo2,
-      validHR,
-      validSPO2,
-      pttMs,
-      redBuffer[BUFFER_SIZE - 1]
-    );
+    xSemaphoreGive(readingMutex);
   }
+  // If the mutex was busy (network task mid-POST), we just skip publishing
+  // this cycle's values — the next loop() iteration (a few ms later) will
+  // publish fresher ones anyway, so it's never worth waiting for.
 
   // Never allow the main loop to become CPU-bound.
   delay(1);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// NETWORK TASK — runs on core 0, fully decoupled from sensor acquisition
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Owns PUSH_INTERVAL_MS pacing and all blocking network work: the HTTP POST
+// and, if needed, Wi-Fi reconnection. Nothing here ever touches the
+// MAX30105/DS18B20 or the sensor buffers directly — it only reads a
+// snapshot of latestReading under the mutex.
+// ═════════════════════════════════════════════════════════════════════════════
+
+void networkTask(void *param) {
+
+  for (;;) {
+
+    if (millis() - lastPushTime >= PUSH_INTERVAL_MS) {
+
+      lastPushTime = millis();
+
+      SensorReading snapshot;
+      bool haveSnapshot = false;
+
+      if (readingMutex != nullptr &&
+          xSemaphoreTake(readingMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+
+        snapshot = latestReading;
+        haveSnapshot = true;
+
+        xSemaphoreGive(readingMutex);
+      }
+
+      if (haveSnapshot) {
+
+        pushToAPI(
+          snapshot.ds_c,
+          snapshot.max_c,
+          snapshot.bpm,
+          snapshot.spo2Val,
+          snapshot.hrOk,
+          snapshot.spo2Ok,
+          snapshot.pttMs,
+          snapshot.redRaw,
+          snapshot.irRaw,
+          snapshot.fingerDetected,
+          snapshot.bufferPrimed
+        );
+      }
+    }
+
+    // Yield generously — this task only needs to wake up often enough to
+    // hit the PUSH_INTERVAL_MS cadence, and giving it a real delay keeps
+    // it from starving other core-0 work (Wi-Fi/TCP stack).
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
 }
 
 
@@ -531,6 +682,8 @@ bool readMAXSample(uint32_t &red, uint32_t &ir) {
   }
 
   lastRealSampleMs = millis();
+  lastLiveIR  = ir;
+  lastLiveRed = red;
 
   return true;
 }
@@ -568,6 +721,11 @@ void maybeRecoverFromStall() {
   );
 
   particleSensor.clearFIFO();
+
+  // A fully dead signal (not just sub-threshold noise) should read as
+  // finger-not-detected too, rather than freezing on the last live value.
+  lastLiveIR  = 0;
+  lastLiveRed = 0;
 
   // Prevent immediately re-triggering the watchdog while the sensor
   // catches back up.
@@ -616,7 +774,14 @@ bool acquireFreshSamples() {
     redBuffer[index] = red;
     irBuffer[index]  = ir;
 
-    processBeat(ir);
+    // Only feed real, above-threshold (finger-present) samples to the beat
+    // detector — sub-threshold ambient noise was previously producing
+    // fabricated heart-rate readings with no finger on the sensor.
+    if (ir >= FINGER_IR_THRESHOLD) {
+      processBeat(ir);
+    } else {
+      resetBeatState();
+    }
 
     collected++;
 
@@ -672,7 +837,11 @@ void collectInitialBuffer() {
     redBuffer[collected] = red;
     irBuffer[collected]  = ir;
 
-    processBeat(ir);
+    if (ir >= FINGER_IR_THRESHOLD) {
+      processBeat(ir);
+    } else {
+      resetBeatState();
+    }
 
     collected++;
 
@@ -686,6 +855,32 @@ void collectInitialBuffer() {
   );
 
   calculateVitals();
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RESET BEAT-DETECTION STATE
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Called whenever the current live sample is below FINGER_IR_THRESHOLD (or
+// the stall watchdog has zeroed lastLiveIR). Without this, beatAvg and PTT
+// would keep reporting the last real reading indefinitely even with no
+// finger on the sensor.
+// ═════════════════════════════════════════════════════════════════════════════
+
+void resetBeatState() {
+
+  peakTime1 = 0;
+  peakTime2 = 0;
+
+  for (int i = 0; i < RATE_SIZE; i++) {
+    rates[i] = 0;
+  }
+
+  rateSpot = 0;
+  beatAvg = 0;
+  beatsPerMinute = 0.0f;
+  pttMs = -1.0f;
 }
 
 
@@ -828,7 +1023,18 @@ void calculateVitals() {
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-// DS18B20
+// DS18B20 — NON-BLOCKING (v3.2)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// requestTemperatures() with the library default (waitForConversion=true)
+// blocks for ~750ms per call. Called every loop() iteration, that stalled
+// the whole firmware long enough for the MAX30105 FIFO to overflow, which
+// is what was silently zeroing out SpO2/HR.
+//
+// Fix: setWaitForConversion(false) is set once in setup(). This function
+// never blocks — it returns the last cached reading immediately, and only
+// pulls the result + kicks off the next async conversion once
+// DS18B20_CONVERSION_MS has actually elapsed since the last request.
 // ═════════════════════════════════════════════════════════════════════════════
 
 float readDS18B20() {
@@ -837,10 +1043,21 @@ float readDS18B20() {
     return 0.0f;
   }
 
-  ds18b20.requestTemperatures();
+  if (!ds18b20ConversionPending) {
+    // Shouldn't normally happen (setup() kicks the first one), but
+    // recover gracefully if it does.
+    ds18b20.requestTemperatures();
+    lastDS18B20RequestMs = millis();
+    ds18b20ConversionPending = true;
+    return cachedDsC;
+  }
 
-  float temperature =
-    ds18b20.getTempCByIndex(0);
+  if (millis() - lastDS18B20RequestMs < DS18B20_CONVERSION_MS) {
+    // Conversion still in flight — return the last good value, don't wait.
+    return cachedDsC;
+  }
+
+  float temperature = ds18b20.getTempCByIndex(0);
 
   if (
     temperature == DEVICE_DISCONNECTED_C ||
@@ -852,10 +1069,16 @@ float readDS18B20() {
       "WARNING: DS18B20 unavailable."
     );
 
-    return 0.0f;
+  } else {
+
+    cachedDsC = temperature;
   }
 
-  return temperature;
+  // Immediately kick off the next conversion — still non-blocking.
+  ds18b20.requestTemperatures();
+  lastDS18B20RequestMs = millis();
+
+  return cachedDsC;
 }
 
 
@@ -871,7 +1094,10 @@ void pushToAPI(
   bool hrOk,
   bool spo2Ok,
   float ptt,
-  uint32_t redRaw
+  uint32_t redRaw,
+  uint32_t irRaw,
+  bool fingerDetected,
+  bool bufferPrimed
 ) {
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -930,21 +1156,17 @@ void pushToAPI(
   doc["temp_die_c"] =
     max_c;
 
-  bool finger =
-    irBuffer[BUFFER_SIZE - 1] >=
-    FINGER_IR_THRESHOLD;
-
   doc["finger_detected"] =
-    finger;
+    fingerDetected;
 
   doc["ir_raw"] =
-    irBuffer[BUFFER_SIZE - 1];
+    irRaw;
 
   doc["red_raw"] =
     redRaw;
 
   doc["buffer_primed"] =
-    bufferFullyPrimed;
+    bufferPrimed;
 
   // Only send valid PTT.
   if (ptt > 0.0f) {

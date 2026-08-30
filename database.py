@@ -136,6 +136,31 @@ def init_db() -> bool:
             )
         """)
 
+        # 5. Monitoring Sessions Table (Binds patient_id and device_id)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS monitoring_sessions (
+                session_id TEXT PRIMARY KEY,
+                patient_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'ACTIVE',
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                FOREIGN KEY (patient_id) REFERENCES patients (patient_id) ON DELETE CASCADE
+            )
+        """)
+
+        # Database Schema Migrations for pre-existing tables
+        for migration in [
+            "ALTER TABLE patients ADD COLUMN device_id TEXT",
+            "ALTER TABLE readings ADD COLUMN patient_id TEXT",
+            "ALTER TABLE readings ADD COLUMN session_id TEXT",
+        ]:
+            try:
+                cursor.execute(migration)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+
         # Auto-seed default admin doctor if no doctor exists
         cursor.execute("SELECT COUNT(*) FROM doctors")
         if cursor.fetchone()[0] == 0:
@@ -247,6 +272,117 @@ def delete_session(token: str):
     conn.close()
 
 
+# ─── Monitoring Session Helpers ───────────────────────────────────────────────
+
+import uuid
+
+def create_monitoring_session(patient_id: str, device_id: str) -> Dict[str, Any]:
+    """
+    Creates a new active monitoring session connecting a patient to an IoT device.
+    Automatically closes any existing active session for this device or patient.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    session_id = f"SESS-{uuid.uuid4().hex[:8].upper()}"
+
+    # Close previous active sessions for this device or patient
+    cursor.execute("""
+        UPDATE monitoring_sessions
+        SET status = 'CLOSED', ended_at = ?
+        WHERE (device_id = ? OR patient_id = ?) AND status = 'ACTIVE'
+    """, (now_iso, device_id, patient_id))
+
+    # Update patient device_id
+    cursor.execute("""
+        UPDATE patients SET device_id = ?, updated_at = ? WHERE patient_id = ?
+    """, (device_id, now_iso, patient_id))
+
+    # Insert new active session
+    cursor.execute("""
+        INSERT INTO monitoring_sessions (session_id, patient_id, device_id, status, started_at)
+        VALUES (?, ?, ?, 'ACTIVE', ?)
+    """, (session_id, patient_id, device_id, now_iso))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "session_id": session_id,
+        "patient_id": patient_id,
+        "device_id": device_id,
+        "status": "ACTIVE",
+        "started_at": now_iso
+    }
+
+
+def get_active_session_by_device(device_id: str) -> Optional[Dict[str, Any]]:
+    """Returns active monitoring session for a given device_id."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM monitoring_sessions WHERE device_id = ? AND status = 'ACTIVE' LIMIT 1
+    """, (device_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+
+def get_active_session_by_patient(patient_id: str) -> Optional[Dict[str, Any]]:
+    """Returns active monitoring session for a given patient_id."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM monitoring_sessions WHERE patient_id = ? AND status = 'ACTIVE' LIMIT 1
+    """, (patient_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+
+def close_monitoring_session_by_patient(patient_id: str) -> bool:
+    """Closes all active monitoring sessions for a patient."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute("""
+        UPDATE monitoring_sessions SET status = 'CLOSED', ended_at = ? WHERE patient_id = ? AND status = 'ACTIVE'
+    """, (now_iso, patient_id))
+    cursor.execute("UPDATE patients SET device_id = NULL, updated_at = ? WHERE patient_id = ?", (now_iso, patient_id))
+    closed = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return closed
+
+
+def close_monitoring_session_by_device(device_id: str) -> bool:
+    """Closes active monitoring session for a device."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor.execute("""
+        UPDATE monitoring_sessions SET status = 'CLOSED', ended_at = ? WHERE device_id = ? AND status = 'ACTIVE'
+    """, (now_iso, device_id))
+    closed = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return closed
+
+
+def get_all_active_sessions() -> List[Dict[str, Any]]:
+    """Fetches all currently active monitoring sessions."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM monitoring_sessions WHERE status = 'ACTIVE' ORDER BY started_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # ─── Patient Storage Helpers ──────────────────────────────────────────────────
 
 def save_patient(patient_record: Dict[str, Any]) -> bool:
@@ -257,6 +393,7 @@ def save_patient(patient_record: Dict[str, Any]) -> bool:
     p_id = patient_record["patient_id"]
     details = patient_record.get("patient_details", {})
     acuity = patient_record.get("acuity", {})
+    device_id = patient_record.get("device_id")
     now_iso = datetime.now(timezone.utc).isoformat()
 
     try:
@@ -266,8 +403,8 @@ def save_patient(patient_record: Dict[str, Any]) -> bool:
                 chief_complaint, pain_level, symptoms, symptom_duration, medical_history,
                 current_medications, allergies, vital_signs,
                 acuity_esi, acuity_severity, acuity_score, acuity_action, contributing_factors,
-                medical_summary, status, doctor_notes, created_by_doctor, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                medical_summary, status, doctor_notes, created_by_doctor, device_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             p_id,
             details.get("first_name", ""),
@@ -291,6 +428,7 @@ def save_patient(patient_record: Dict[str, Any]) -> bool:
             patient_record.get("status", "TRIAGED"),
             patient_record.get("doctor_notes", ""),
             patient_record.get("created_by_doctor", "SYSTEM"),
+            device_id,
             patient_record.get("timestamp", now_iso),
             now_iso
         ))
@@ -335,6 +473,9 @@ def update_patient_status(patient_id: str, status: str, doctor_notes: Optional[s
     cursor = conn.cursor()
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    if status.upper() == "DISCHARGED":
+        close_monitoring_session_by_patient(patient_id)
+
     if doctor_notes is not None:
         cursor.execute("""
             UPDATE patients SET status = ?, doctor_notes = ?, updated_at = ? WHERE patient_id = ?
@@ -350,7 +491,8 @@ def update_patient_status(patient_id: str, status: str, doctor_notes: Optional[s
 
 
 def delete_patient(patient_id: str) -> bool:
-    """Deletes/discharges patient record from SQLite."""
+    """Deletes/discharges patient record from SQLite and closes monitoring session."""
+    close_monitoring_session_by_patient(patient_id)
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM patients WHERE patient_id = ?", (patient_id,))
@@ -362,8 +504,11 @@ def delete_patient(patient_id: str) -> bool:
 
 def format_patient_row(r: sqlite3.Row) -> Dict[str, Any]:
     """Helper to convert sqlite3.Row into dict matching API schema."""
+    row_keys = r.keys()
+    device_id = r["device_id"] if "device_id" in row_keys else None
     return {
         "patient_id": r["patient_id"],
+        "device_id": device_id,
         "timestamp": r["created_at"],
         "updated_at": r["updated_at"],
         "status": r["status"],
@@ -397,7 +542,7 @@ def format_patient_row(r: sqlite3.Row) -> Dict[str, Any]:
 # ─── Sensor Readings Storage ──────────────────────────────────────────────────
 
 def save_reading(reading_data: Dict[str, Any]) -> bool:
-    """Logs raw telemetry reading into readings table."""
+    """Logs raw telemetry reading into readings table with optional patient_id & session_id."""
     conn = get_db_connection()
     cursor = conn.cursor()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -405,10 +550,12 @@ def save_reading(reading_data: Dict[str, Any]) -> bool:
     try:
         cursor.execute("""
             INSERT INTO readings (
-                device_id, timestamp_ms, bpm, spo2, temp_body_c, temp_body_f, sbp, dbp, ptt_ms, finger_detected, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                device_id, patient_id, session_id, timestamp_ms, bpm, spo2, temp_body_c, temp_body_f, sbp, dbp, ptt_ms, finger_detected, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             reading_data.get("device_id", "esp32-01"),
+            reading_data.get("patient_id"),
+            reading_data.get("session_id"),
             reading_data.get("timestamp_ms", 0),
             reading_data.get("bpm", 0),
             reading_data.get("spo2", 0.0),
@@ -427,3 +574,30 @@ def save_reading(reading_data: Dict[str, Any]) -> bool:
         logger.error(f"Error logging reading to SQLite: {e}")
         conn.close()
         return False
+
+
+def get_patient_readings(patient_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    """Fetches vital sign reading history for a specific patient."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM readings WHERE patient_id = ? ORDER BY created_at DESC LIMIT ?
+    """, (patient_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_latest_patient_reading(patient_id: str) -> Optional[Dict[str, Any]]:
+    """Fetches latest vital sign reading for a specific patient."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM readings WHERE patient_id = ? ORDER BY created_at DESC LIMIT 1
+    """, (patient_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+

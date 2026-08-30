@@ -39,6 +39,14 @@ from database import (
     update_patient_status,
     delete_patient,
     save_reading,
+    create_monitoring_session,
+    get_active_session_by_device,
+    get_active_session_by_patient,
+    close_monitoring_session_by_patient,
+    close_monitoring_session_by_device,
+    get_all_active_sessions,
+    get_patient_readings,
+    get_latest_patient_reading,
 )
 
 # Initialize SQLite database on startup
@@ -140,6 +148,7 @@ class VitalSignsIntake(BaseModel):
 
 class PatientIntakeForm(BaseModel):
     patient_id:          Optional[str] = None
+    device_id:           Optional[str] = Field(None, description="ESP32 hardware device ID to assign (e.g. esp32-01)")
     patient_details:     PatientDetails
     chief_complaint:     str
     symptoms:            List[str]     = []
@@ -149,6 +158,17 @@ class PatientIntakeForm(BaseModel):
     current_medications: List[str]     = []
     allergies:           List[str]     = []
     vital_signs:         Optional[VitalSignsIntake] = None
+
+
+class SessionStartRequest(BaseModel):
+    patient_id: str
+    device_id:  str
+
+
+class SessionStopRequest(BaseModel):
+    patient_id: Optional[str] = None
+    device_id:  Optional[str] = None
+
 
 
 class CalibrationRequest(BaseModel):
@@ -290,6 +310,12 @@ async def ingest_reading(reading: Reading):
         bp_valid = sbp is not None
 
     record = reading.model_dump()
+
+    # Look up active monitoring session linking device_id to a registered patient
+    active_session = get_active_session_by_device(reading.device_id)
+    patient_id = active_session["patient_id"] if active_session else None
+    session_id = active_session["session_id"] if active_session else None
+
     record.update({
         "server_time":     datetime.now(timezone.utc).isoformat(),
         "temp_body_f":     round(reading.temp_body_c * 9.0 / 5.0 + 32.0, 2),
@@ -299,22 +325,25 @@ async def ingest_reading(reading: Reading):
         "map":             round((sbp + 2 * dbp) / 3, 1) if bp_valid else None,
         "pulse_pressure":  round(sbp - dbp, 1) if bp_valid else None,
         "device_connected": True,
+        "patient_id":      patient_id,
+        "session_id":      session_id,
     })
 
     realtime_history.append(record)
     tenmin_history.append(record)
     latest_reading = record
 
-    # Persist to SQLite readings log
+    # Persist to SQLite readings log (with patient_id & session_id)
     save_reading(record)
 
-    # Produce to Kafka topic
-    send_kafka_message("vital-signs", key=reading.device_id, value=record)
+    # Produce to Kafka topic using patient_id key if bound, else hardware device_id
+    kafka_key = patient_id or reading.device_id
+    send_kafka_message("vital-signs", key=kafka_key, value=record)
 
     # Broadcast to SSE clients asynchronously
     asyncio.create_task(broadcast_sse({"type": "telemetry", "data": record}))
 
-    return {"status": "ok", "sbp": sbp, "dbp": dbp, "bp_valid": bp_valid}
+    return {"status": "ok", "sbp": sbp, "dbp": dbp, "bp_valid": bp_valid, "patient_id": patient_id, "session_id": session_id}
 
 
 @app.get("/readings/stream")
@@ -357,20 +386,36 @@ async def submit_patient_intake(form: PatientIntakeForm, request: Request):
     intake_data["timestamp"] = timestamp
     intake_data["created_by_doctor"] = doctor["full_name"]
 
+    # Bind patient to assigned ESP32 device via active Monitoring Session if provided
+    if form.device_id:
+        session = create_monitoring_session(p_id, form.device_id)
+        intake_data["device_id"] = form.device_id
+
+        # Retrieve latest vitals ONLY for this patient/device from SQLite reading history
+        patient_reading = get_latest_patient_reading(p_id)
+        if patient_reading:
+            intake_data["latest_vitals"] = {
+                "bpm": patient_reading.get("bpm"),
+                "spo2": patient_reading.get("spo2"),
+                "temperature": patient_reading.get("temp_body_c"),
+                "sbp": patient_reading.get("sbp"),
+                "dbp": patient_reading.get("dbp"),
+                "ptt_ms": patient_reading.get("ptt_ms"),
+            }
+    elif form.vital_signs:
+        v_dict = form.vital_signs.model_dump()
+        intake_data["latest_vitals"] = {
+            "bpm": v_dict.get("heart_rate"),
+            "spo2": v_dict.get("oxygen_saturation"),
+            "temperature": v_dict.get("temperature"),
+            "sbp": v_dict.get("blood_pressure_systolic"),
+            "dbp": v_dict.get("blood_pressure_diastolic"),
+            "ptt_ms": None,
+        }
+
     # Generate LLM medical summary
     medical_summary = generate_medical_summary(intake_data)
     intake_data["medical_summary"] = medical_summary
-
-    # Inject latest live vitals if available
-    if latest_reading:
-        intake_data["latest_vitals"] = {
-            "bpm": latest_reading.get("bpm"),
-            "spo2": latest_reading.get("spo2"),
-            "temperature": latest_reading.get("temp_body_c"),
-            "sbp": latest_reading.get("sbp"),
-            "dbp": latest_reading.get("dbp"),
-            "ptt_ms": latest_reading.get("ptt_ms"),
-        }
 
     # Compute Acuity & ESI Level
     acuity_result = compute_acuity(intake_data)
@@ -407,6 +452,63 @@ async def submit_patient_intake(form: PatientIntakeForm, request: Request):
         "acuity": acuity_result,
         "medical_summary": medical_summary,
     }
+
+
+# ─── Monitoring Session Endpoints ───────────────────────────────────────────
+
+@app.post("/api/sessions/start")
+async def start_monitoring_session(req: SessionStartRequest, request: Request):
+    """Assigns an IoT device to a patient and opens an active monitoring session (Doctor Auth Required)."""
+    get_current_doctor(request)
+    patient = get_patient_by_id(req.patient_id)
+    if not patient:
+        raise HTTPException(404, f"Patient {req.patient_id} not found.")
+
+    session = create_monitoring_session(req.patient_id, req.device_id)
+
+    asyncio.create_task(broadcast_sse({
+        "type": "triage_update",
+        "patient_id": req.patient_id,
+        "action": "session_started",
+        "device_id": req.device_id
+    }))
+
+    return {"status": "success", "session": session}
+
+
+@app.post("/api/sessions/stop")
+async def stop_monitoring_session(req: SessionStopRequest, request: Request):
+    """Closes active monitoring session for a patient or device (Doctor Auth Required)."""
+    get_current_doctor(request)
+    closed = False
+    if req.patient_id:
+        closed = close_monitoring_session_by_patient(req.patient_id)
+    elif req.device_id:
+        closed = close_monitoring_session_by_device(req.device_id)
+    else:
+        raise HTTPException(400, "Must provide patient_id or device_id to stop session.")
+
+    asyncio.create_task(broadcast_sse({
+        "type": "triage_update",
+        "action": "session_stopped"
+    }))
+
+    return {"status": "success", "closed": closed}
+
+
+@app.get("/api/sessions/active")
+async def get_active_sessions():
+    """Lists all active monitoring sessions."""
+    sessions = get_all_active_sessions()
+    return {"status": "success", "count": len(sessions), "sessions": sessions}
+
+
+@app.get("/api/triage/patient/{patient_id}/readings")
+async def get_patient_vital_readings(patient_id: str, limit: int = 100):
+    """Retrieves vital sign reading history for a specific patient."""
+    readings = get_patient_readings(patient_id, limit=limit)
+    return {"status": "success", "patient_id": patient_id, "count": len(readings), "readings": readings}
+
 
 
 @app.get("/api/triage/queue")

@@ -9,22 +9,24 @@ Can be executed during initial deployment or server startup:
 
 import sys
 import logging
-from database import init_db, DB_PATH
+from migrate_db import run_migrations, verify_tables, DB_PATH
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("InitDB")
 
 def main():
-    logger.info("Initializing BioWear SQLite Database...")
+    logger.info("Initializing & Migrating BioWear SQLite Database...")
     logger.info(f"Target Database File: {DB_PATH}")
 
-    success = init_db()
+    success = run_migrations()
     if success:
-        logger.info("✅ Database initialization complete. All tables created or verified.")
+        verify_tables()
+        logger.info("✅ Database initialization & schema migration complete.")
         sys.exit(0)
     else:
-        logger.error("❌ Database initialization failed.")
+        logger.error("❌ Database initialization & migration failed.")
         sys.exit(1)
 
 if __name__ == "__main__":
     main()
+
