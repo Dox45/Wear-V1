@@ -9,13 +9,14 @@ import os
 import json
 import logging
 from typing import Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 logger = logging.getLogger("NLPEngine")
 
-NVIDIA_API_KEY = os.getenv(
-    "NVIDIA_API_KEY",
-    "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"
-)
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
 
