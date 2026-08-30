@@ -7,9 +7,8 @@
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <!-- FontAwesome Icons -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
   <!-- Chart.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 
@@ -21,9 +20,6 @@
   <!-- Header -->
   <header>
     <div class="brand-container">
-      <div class="brand-icon">
-        <i class="fa-solid fa-heart-pulse"></i>
-      </div>
       <div>
         <div class="brand-title">BioWear PRO</div>
         <div class="brand-subtitle">Cloud IoT Medical Triage Command Center</div>
@@ -34,46 +30,42 @@
       <!-- Doctor Session Badge -->
       <div id="doctorAuthContainer">
         <button class="btn-primary" id="doctorLoginNavBtn" onclick="openAuthModal()">
-          <i class="fa-solid fa-user-doctor"></i> Doctor Portal
+          Doctor Portal
         </button>
         <div id="doctorProfileBadge" style="display: none;" class="doctor-badge">
-          <i class="fa-solid fa-user-nurse" style="font-size: 1.1rem;"></i>
           <div>
             <div id="docNameText" style="font-weight: 700;">Dr. Somtoo</div>
-            <div id="docDeptText" style="font-size: 0.68rem; color: var(--text-muted);">Emergency Triage</div>
+            <div id="docDeptText" style="font-size: 0.75rem; color: var(--text-muted);">Emergency Triage</div>
           </div>
-          <button class="btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.72rem; margin-left: 0.4rem;" onclick="handleLogout()">
-            <i class="fa-solid fa-right-from-bracket"></i>
+          <button class="btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; margin-left: 0.5rem;" onclick="handleLogout()">
+            Log Out
           </button>
         </div>
       </div>
 
       <!-- API Endpoint Status Badge -->
       <div class="api-badge" id="apiStatusBadge">
-        <i class="fa-solid fa-cloud-bolt"></i>
-        <span id="apiEndpointText">ngrok Cloud API</span>
+        <span id="apiEndpointText">API Connected</span>
       </div>
 
       <!-- Device Connection Status Badge -->
       <div class="device-badge" id="deviceStatusBadge">
-        <div class="pulse-ring"></div>
         <span id="deviceStatusText">DISCONNECTED</span>
       </div>
 
       <!-- Finger Detection Status Badge -->
       <div class="finger-badge" id="fingerStatusBadge">
-        <i class="fa-solid fa-hand-pointer"></i>
         <span id="fingerStatusText">NO FINGER</span>
       </div>
 
       <!-- Intake Form Trigger (Hidden unless authenticated) -->
       <button class="btn-primary" id="navIntakeBtn" style="display: none;" onclick="openIntakeModal()">
-        <i class="fa-solid fa-user-plus"></i> New Patient Intake
+        New Patient Intake
       </button>
 
       <!-- Simulation Test Trigger (Hidden unless authenticated) -->
       <button class="btn-secondary" id="navSimulateBtn" style="display: none;" onclick="triggerSimulation()">
-        <i class="fa-solid fa-flask"></i> Simulate Patient Data
+        Simulate Data
       </button>
     </div>
   </header>
@@ -83,14 +75,13 @@
     <!-- Finger Sensor Floating Banner -->
     <div class="finger-alert-banner" id="fingerBanner">
       <div class="finger-alert-content">
-        <i class="fa-solid fa-hand-holding-medical finger-floating-icon"></i>
         <div>
-          <strong style="color: var(--gold); font-size: 0.95rem;">Optical Finger Sensor Waiting</strong>
-          <p style="font-size: 0.82rem; color: var(--text-muted);">Place finger securely on MAX30102 sensor to activate pulse transit time (PTT) and blood pressure reading.</p>
+          <strong style="font-size: 0.95rem;">Optical Finger Sensor Waiting</strong>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.2rem;">Place finger securely on sensor to activate pulse transit time (PTT) and blood pressure reading.</p>
         </div>
       </div>
-      <button class="btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;" onclick="triggerFingerSimulation()">
-        <i class="fa-solid fa-check"></i> Simulate Finger Touch
+      <button class="btn-secondary" id="btnSimFinger" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;" onclick="triggerFingerSimulation()">
+        Simulate Finger Touch
       </button>
     </div>
 
@@ -98,12 +89,9 @@
     <div class="kpi-grid">
 
       <!-- Heart Rate KPI -->
-      <div class="glass-panel kpi-card" style="--card-accent: var(--crimson);">
+      <div class="glass-panel kpi-card">
         <div class="kpi-header">
           <span class="kpi-label">Heart Rate</span>
-          <div class="kpi-icon-wrap" style="color: var(--crimson);">
-            <i class="fa-solid fa-heart-pulse"></i>
-          </div>
         </div>
         <div class="kpi-value-wrap">
           <span class="kpi-value" id="kpiBpm">--</span>
@@ -116,12 +104,9 @@
       </div>
 
       <!-- SpO2 Oxygen Saturation KPI -->
-      <div class="glass-panel kpi-card" style="--card-accent: var(--primary);">
+      <div class="glass-panel kpi-card">
         <div class="kpi-header">
           <span class="kpi-label">Blood Oxygen</span>
-          <div class="kpi-icon-wrap" style="color: var(--primary);">
-            <i class="fa-solid fa-lungs"></i>
-          </div>
         </div>
         <div class="kpi-value-wrap">
           <span class="kpi-value" id="kpiSpo2">--</span>
@@ -134,12 +119,9 @@
       </div>
 
       <!-- Body Temperature KPI -->
-      <div class="glass-panel kpi-card" style="--card-accent: var(--gold);">
+      <div class="glass-panel kpi-card">
         <div class="kpi-header">
           <span class="kpi-label">Body Temp</span>
-          <div class="kpi-icon-wrap" style="color: var(--gold);">
-            <i class="fa-solid fa-temperature-three-quarters"></i>
-          </div>
         </div>
         <div class="kpi-value-wrap">
           <span class="kpi-value" id="kpiTemp">--</span>
@@ -152,12 +134,9 @@
       </div>
 
       <!-- Estimated Blood Pressure (PTT Model) KPI -->
-      <div class="glass-panel kpi-card" style="--card-accent: var(--violet);">
+      <div class="glass-panel kpi-card">
         <div class="kpi-header">
           <span class="kpi-label">Est. Blood Pressure</span>
-          <div class="kpi-icon-wrap" style="color: var(--violet);">
-            <i class="fa-solid fa-gauge-high"></i>
-          </div>
         </div>
         <div class="kpi-value-wrap">
           <span class="kpi-value" id="kpiBp" style="font-size: 2.1rem;">-- / --</span>
@@ -181,11 +160,10 @@
         <div class="glass-panel" style="padding: 1.5rem;">
           <div class="panel-header">
             <div class="panel-title">
-              <i class="fa-solid fa-wave-square" style="color: var(--primary);"></i>
               Live Photoplethysmogram (PPG) Waveform
             </div>
-            <span style="font-family: 'JetBrains Mono'; font-size: 0.75rem; color: var(--emerald);">
-              <i class="fa-solid fa-circle" style="font-size: 0.5rem;"></i> REALTIME 60 FPS
+            <span style="font-size: 0.75rem; font-weight: 600;">
+              REALTIME 60 FPS
             </span>
           </div>
           <div class="canvas-container">
@@ -197,7 +175,6 @@
         <div class="glass-panel" style="padding: 1.5rem;">
           <div class="panel-header">
             <div class="panel-title">
-              <i class="fa-solid fa-chart-line" style="color: var(--gold);"></i>
               Continuous Telemetry History (BPM / SpO₂ / Temperature)
             </div>
           </div>
@@ -212,7 +189,6 @@
       <div class="glass-panel" style="padding: 1.5rem; display: flex; flex-direction: column;">
         <div class="panel-header">
           <div class="panel-title">
-            <i class="fa-solid fa-list-check" style="color: var(--emerald);"></i>
             Intelligent Triage Priority Queue
           </div>
           <span class="esi-tag esi-1" id="queueCountBadge">0 Patients</span>
@@ -248,7 +224,6 @@
     <div class="modal-card">
       <div class="modal-header">
         <div class="modal-title">
-          <i class="fa-solid fa-user-plus" style="color: var(--primary);"></i>
           New Patient Triage Intake
         </div>
         <button class="modal-close" onclick="closeIntakeModal()">&times;</button>
@@ -318,8 +293,8 @@
 
         <div style="display: flex; justify-content: flex-end; gap: 1rem; margin-top: 1.5rem;">
           <button type="button" class="btn-secondary" onclick="closeIntakeModal()">Cancel</button>
-          <button type="submit" class="btn-primary">
-            <i class="fa-solid fa-wand-magic-sparkles"></i> Submit & Generate AI Triage
+          <button type="submit" id="btnSubmitIntake" class="btn-primary">
+            Submit & Generate AI Triage
           </button>
         </div>
       </form>
@@ -331,7 +306,6 @@
     <div class="modal-card" style="max-width: 480px;">
       <div class="modal-header">
         <div class="modal-title">
-          <i class="fa-solid fa-user-doctor" style="color: var(--primary);"></i>
           Doctor Portal Authentication
         </div>
         <button class="modal-close" onclick="closeAuthModal()">&times;</button>
@@ -358,8 +332,8 @@
           <input type="password" id="loginPassword" class="form-input" placeholder="Doctor123!" required>
         </div>
         <div style="margin-top: 1.5rem;">
-          <button type="submit" class="btn-primary" style="width: 100%; justify-content: center;">
-            <i class="fa-solid fa-right-to-bracket"></i> Login to Doctor Portal
+          <button type="submit" id="btnLoginSubmit" class="btn-primary" style="width: 100%; justify-content: center;">
+            Login to Doctor Portal
           </button>
         </div>
         <p style="font-size: 0.78rem; color: var(--text-dim); text-align: center; margin-top: 1rem;">
@@ -392,8 +366,8 @@
           <input type="password" id="signUpPassword" class="form-input" minlength="6" required>
         </div>
         <div style="margin-top: 1.5rem;">
-          <button type="submit" class="btn-primary" style="width: 100%; justify-content: center;">
-            <i class="fa-solid fa-user-plus"></i> Register Doctor Account
+          <button type="submit" id="btnSignupSubmit" class="btn-primary" style="width: 100%; justify-content: center;">
+            Register Doctor Account
           </button>
         </div>
       </form>
@@ -405,7 +379,6 @@
     <div class="modal-card" style="max-width: 800px;">
       <div class="modal-header">
         <div class="modal-title" id="summaryModalTitle">
-          <i class="fa-solid fa-file-medical" style="color: var(--gold);"></i>
           AI Medical Summary & Triage Profile
         </div>
         <button class="modal-close" onclick="closeSummaryModal()">&times;</button>

@@ -27,6 +27,25 @@ async function apiFetch(path, options = {}) {
   return fetch(url, { ...options, headers });
 }
 
+/**
+ * Helper to manage button loading states and prevent multiple clicks.
+ */
+function setButtonLoading(btn, isLoading, loadingText = "Processing...") {
+  if (!btn) return;
+  if (isLoading) {
+    if (!btn.dataset.originalText) {
+      btn.dataset.originalText = btn.innerHTML;
+    }
+    btn.disabled = true;
+    btn.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> ${loadingText}`;
+  } else {
+    btn.disabled = false;
+    if (btn.dataset.originalText) {
+      btn.innerHTML = btn.dataset.originalText;
+    }
+  }
+}
+
 // Global Application State
 let latestTelemetry = null;
 let historyChart = null;
@@ -70,7 +89,7 @@ function renderPPG() {
   const height = ppgCanvas.height;
   const midY = height / 2;
 
-  ppgCtx.fillStyle = "rgba(10, 11, 14, 0.25)";
+  ppgCtx.fillStyle = "#090c13";
   ppgCtx.fillRect(0, 0, width, height);
 
   // Draw Grid lines
@@ -89,10 +108,8 @@ function renderPPG() {
   wavePhase += speed;
 
   ppgCtx.beginPath();
-  ppgCtx.lineWidth = 3;
-  ppgCtx.strokeStyle = finger ? "#06b6d4" : "rgba(148, 163, 184, 0.3)";
-  ppgCtx.shadowBlur = finger ? 15 : 0;
-  ppgCtx.shadowColor = "#06b6d4";
+  ppgCtx.lineWidth = 2.5;
+  ppgCtx.strokeStyle = finger ? "#38bdf8" : "rgba(148, 163, 184, 0.3)";
 
   for (let x = 0; x < width; x++) {
     let y = midY;
@@ -123,18 +140,18 @@ function initChart() {
       datasets: [
         {
           label: 'Heart Rate (BPM)',
-          borderColor: '#ef4444',
-          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          borderColor: '#f87171',
+          backgroundColor: 'rgba(248, 113, 113, 0.1)',
           data: [],
-          tension: 0.4,
+          tension: 0.3,
           borderWidth: 2
         },
         {
           label: 'SpO2 (%)',
-          borderColor: '#06b6d4',
-          backgroundColor: 'rgba(6, 182, 212, 0.1)',
+          borderColor: '#38bdf8',
+          backgroundColor: 'rgba(56, 189, 248, 0.1)',
           data: [],
-          tension: 0.4,
+          tension: 0.3,
           borderWidth: 2
         },
         {
@@ -142,7 +159,7 @@ function initChart() {
           borderColor: '#fbbf24',
           backgroundColor: 'rgba(251, 191, 36, 0.1)',
           data: [],
-          tension: 0.4,
+          tension: 0.3,
           borderWidth: 2
         }
       ]
@@ -152,8 +169,8 @@ function initChart() {
       maintainAspectRatio: false,
       plugins: { legend: { labels: { color: '#94a3b8' } } },
       scales: {
-        x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.05)' } },
-        y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.05)' } }
+        x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.04)' } }
       }
     }
   });
@@ -176,7 +193,6 @@ function initSSE() {
     };
 
     evtSource.onerror = (err) => {
-      // SSE reconnects automatically; polling timer ensures seamless fallback
       pollTelemetry();
     };
   } catch (err) {
@@ -308,7 +324,7 @@ function renderQueue(queue) {
         </td>
         <td>
           <span class="esi-tag esi-${esi}">
-            <i class="fa-solid fa-triangle-exclamation"></i> ESI ${esi} - ${severity}
+            ESI ${esi} - ${severity}
           </span>
           <span class="status-tag ${statusClass}" style="margin-left: 0.4rem;">
             ${status.replace('_', ' ')}
@@ -318,8 +334,8 @@ function renderQueue(queue) {
           <span style="font-family: 'JetBrains Mono'; font-weight: 700;">${rawScore} pts</span>
         </td>
         <td>
-          <button class="btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;" onclick="viewPatientDetail('${p.patient_id}')">
-            <i class="fa-solid fa-file-medical"></i> View Profile
+          <button class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.75rem;" onclick="viewPatientDetail('${p.patient_id}')">
+            View Profile
           </button>
         </td>
       </tr>
@@ -353,9 +369,12 @@ function updatePainBadge(val) {
   if (badge) badge.innerText = val;
 }
 
-// Form Submission
+// Form Submission with Loading & Click Protection
 async function handleIntakeSubmit(e) {
   e.preventDefault();
+  const btn = document.getElementById("btnSubmitIntake");
+  setButtonLoading(btn, true, "Submitting Intake...");
+
   const symptoms = Array.from(document.querySelectorAll('input[name="symptom"]:checked')).map(el => el.value);
   const history = Array.from(document.querySelectorAll('input[name="history"]:checked')).map(el => el.value);
 
@@ -384,9 +403,13 @@ async function handleIntakeSubmit(e) {
       closeIntakeModal();
       fetchQueue();
       viewPatientDetail(result.patient_id);
+    } else {
+      alert("Failed to submit patient intake.");
     }
   } catch (err) {
     alert("Failed to submit patient intake.");
+  } finally {
+    setButtonLoading(btn, false);
   }
 }
 
@@ -410,24 +433,24 @@ async function viewPatientDetail(pId) {
       .replace(/\n\n/g, '<br>');
 
     document.getElementById("summaryModalContent").innerHTML = `
-      <div style="display: flex; gap: 1rem; align-items: center; justify-content: space-between; margin-bottom: 1.5rem;">
-        <div style="display: flex; gap: 0.8rem; align-items: center;">
-          <span class="esi-tag esi-${esi}" style="font-size: 0.9rem; padding: 0.5rem 1rem;">
+      <div style="display: flex; gap: 1rem; align-items: center; justify-content: space-between; margin-bottom: 1.25rem;">
+        <div style="display: flex; gap: 0.75rem; align-items: center;">
+          <span class="esi-tag esi-${esi}" style="font-size: 0.85rem; padding: 0.4rem 0.85rem;">
             ESI Level ${esi} — ${p.acuity?.severity}
           </span>
-          <span class="status-tag status-${status.toLowerCase()}" style="font-size: 0.85rem; padding: 0.4rem 0.9rem;">
+          <span class="status-tag status-${status.toLowerCase()}" style="font-size: 0.8rem; padding: 0.35rem 0.75rem;">
             Status: ${status.replace('_', ' ')}
           </span>
         </div>
-        <span style="color: var(--text-muted); font-size: 0.85rem;">
+        <span style="color: var(--text-muted); font-size: 0.82rem;">
           Action: <strong>${p.acuity?.action}</strong>
         </span>
       </div>
 
       <!-- Doctor Triage Administration Control Panel -->
-      <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1.25rem; margin-bottom: 1.5rem;">
-        <div style="font-weight: 700; color: var(--primary); font-size: 0.9rem; margin-bottom: 0.8rem; display: flex; align-items: center; gap: 0.5rem;">
-          <i class="fa-solid fa-user-doctor"></i> Doctor Clinical Record Administration
+      <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1.1rem; margin-bottom: 1.25rem;">
+        <div style="font-weight: 700; color: var(--primary); font-size: 0.88rem; margin-bottom: 0.75rem;">
+          Doctor Clinical Record Administration
         </div>
         <div class="form-row">
           <div class="form-group" style="margin-bottom: 0;">
@@ -443,19 +466,19 @@ async function viewPatientDetail(pId) {
             <input type="text" id="adminDoctorNotes" class="form-input" placeholder="e.g. Administered IV fluids..." value="${p.doctor_notes || ''}">
           </div>
         </div>
-        <div style="display: flex; gap: 1rem; justify-content: flex-end; margin-top: 1rem;">
-          <button class="btn-secondary" style="color: var(--crimson); border-color: rgba(239,68,68,0.3);" onclick="dischargePatientRecord('${p.patient_id}')">
-            <i class="fa-solid fa-user-minus"></i> Discharge / Delete Record
+        <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1rem;">
+          <button class="btn-secondary" id="btnDischargeRecord" style="color: var(--crimson); border-color: rgba(248,113,113,0.3);" onclick="dischargePatientRecord('${p.patient_id}')">
+            Discharge / Delete Record
           </button>
-          <button class="btn-primary" onclick="savePatientAdminStatus('${p.patient_id}')">
-            <i class="fa-solid fa-floppy-disk"></i> Save Doctor Record Update
+          <button class="btn-primary" id="btnSaveAdmin" onclick="savePatientAdminStatus('${p.patient_id}')">
+            Save Record Update
           </button>
         </div>
       </div>
 
       <div style="margin-bottom: 1rem;">
         <strong>Contributing Clinical Factors:</strong>
-        <ul style="padding-left: 1.2rem; color: var(--gold); margin-top: 0.4rem;">
+        <ul style="padding-left: 1.1rem; color: var(--gold); margin-top: 0.35rem;">
           ${factors.map(f => `<li>${f}</li>`).join('')}
         </ul>
       </div>
@@ -525,7 +548,7 @@ function updateDoctorUI(doctor) {
 
   if (doctor) {
     if (navBtn) navBtn.style.display = "none";
-    if (badge) badge.style.display = "flex";
+    if (badge) badge.style.display = "inline-flex";
     if (intakeBtn) intakeBtn.style.display = "inline-flex";
     if (simBtn) simBtn.style.display = "inline-flex";
     const elName = document.getElementById("docNameText");
@@ -542,6 +565,9 @@ function updateDoctorUI(doctor) {
 
 async function handleLoginSubmit(e) {
   e.preventDefault();
+  const btn = document.getElementById("btnLoginSubmit");
+  setButtonLoading(btn, true, "Logging in...");
+
   const u = document.getElementById("loginUsername").value;
   const p = document.getElementById("loginPassword").value;
 
@@ -557,18 +583,22 @@ async function handleLoginSubmit(e) {
       currentDoctor = data.doctor;
       updateDoctorUI(currentDoctor);
       closeAuthModal();
-      alert(`Welcome back, ${currentDoctor.full_name}! Doctor Portal active.`);
     } else {
       const err = await res.json();
       alert(err.detail || "Invalid doctor login credentials.");
     }
   } catch (err) {
     alert("Doctor login failed.");
+  } finally {
+    setButtonLoading(btn, false);
   }
 }
 
 async function handleSignupSubmit(e) {
   e.preventDefault();
+  const btn = document.getElementById("btnSignupSubmit");
+  setButtonLoading(btn, true, "Registering...");
+
   const payload = {
     full_name: document.getElementById("signUpFullName").value,
     license_number: document.getElementById("signUpLicense").value,
@@ -584,7 +614,7 @@ async function handleSignupSubmit(e) {
       body: JSON.stringify(payload)
     });
     if (res.ok) {
-      alert("Doctor registration successful! Logging in...");
+      alert("Doctor registration successful! Please log in.");
       switchAuthTab('login');
       document.getElementById("loginUsername").value = payload.username;
       document.getElementById("loginPassword").value = payload.password;
@@ -594,6 +624,8 @@ async function handleSignupSubmit(e) {
     }
   } catch (err) {
     alert("Registration failed.");
+  } finally {
+    setButtonLoading(btn, false);
   }
 }
 
@@ -602,10 +634,12 @@ async function handleLogout() {
   localStorage.removeItem("doctor_token");
   currentDoctor = null;
   updateDoctorUI(null);
-  alert("Logged out of Doctor Portal.");
 }
 
 async function savePatientAdminStatus(pId) {
+  const btn = document.getElementById("btnSaveAdmin");
+  setButtonLoading(btn, true, "Saving...");
+
   const status = document.getElementById("adminPatientStatus").value;
   const notes = document.getElementById("adminDoctorNotes").value;
 
@@ -617,7 +651,6 @@ async function savePatientAdminStatus(pId) {
     });
 
     if (res.ok) {
-      alert("Doctor record update saved to SQLite DB.");
       closeSummaryModal();
       fetchQueue();
     } else {
@@ -625,16 +658,20 @@ async function savePatientAdminStatus(pId) {
     }
   } catch (e) {
     alert("Error saving doctor update.");
+  } finally {
+    setButtonLoading(btn, false);
   }
 }
 
 async function dischargePatientRecord(pId) {
   if (!confirm(`Are you sure you want to discharge and delete patient ${pId} from SQLite database?`)) return;
 
+  const btn = document.getElementById("btnDischargeRecord");
+  setButtonLoading(btn, true, "Discharging...");
+
   try {
     const res = await apiFetch(`/api/triage/patient/${pId}`, { method: "DELETE" });
     if (res.ok) {
-      alert(`Patient ${pId} discharged successfully.`);
       closeSummaryModal();
       fetchQueue();
     } else {
@@ -642,6 +679,8 @@ async function dischargePatientRecord(pId) {
     }
   } catch (e) {
     alert("Error discharging patient.");
+  } finally {
+    setButtonLoading(btn, false);
   }
 }
 
@@ -652,6 +691,9 @@ async function triggerSimulation() {
     openAuthModal();
     return;
   }
+
+  const btn = document.getElementById("navSimulateBtn");
+  setButtonLoading(btn, true, "Simulating...");
 
   const sampleNames = [["Amina", "Yusuf"], ["Chidi", "Okonkwo"], ["Fatima", "Bello"], ["Emeka", "Nnamdi"]];
   const sampleComplaints = [
@@ -675,15 +717,23 @@ async function triggerSimulation() {
     medical_history: ["Hypertension"]
   };
 
-  await apiFetch('/api/patient-intake', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  fetchQueue();
+  try {
+    await apiFetch('/api/patient-intake', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    fetchQueue();
+  } catch (e) {
+  } finally {
+    setButtonLoading(btn, false);
+  }
 }
 
 async function triggerFingerSimulation() {
+  const btn = document.getElementById("btnSimFinger");
+  setButtonLoading(btn, true, "Simulating...");
+
   const simReading = {
     device_id: "esp32-01",
     timestamp_ms: Date.now(),
@@ -699,9 +749,14 @@ async function triggerFingerSimulation() {
     ptt_ms: 450.0
   };
 
-  await apiFetch('/readings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(simReading)
-  });
+  try {
+    await apiFetch('/readings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(simReading)
+    });
+  } catch (e) {
+  } finally {
+    setButtonLoading(btn, false);
+  }
 }
