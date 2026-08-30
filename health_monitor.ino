@@ -26,10 +26,11 @@
 */
 
 // ─── User configuration ───────────────────────────────────────────────────────
-#define WIFI_SSID      "YOUR_SSID"
-#define WIFI_PASSWORD  "YOUR_PASSWORD"
-#define API_HOST       "your-app.onrender.com"  // ← no https://
+#define WIFI_SSID      "YOUR_WIFI_SSID"      // Replace with your local Wi-Fi SSID
+#define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"  // Replace with your local Wi-Fi password
+#define API_HOST       "192.168.1.100:8000"  // Replace 192.168.1.100 with your computer's local IP
 #define API_ENDPOINT   "/readings"
+#define USE_HTTPS      false                 // Set to false for local server (http://), true for cloud (https://)
 #define DEVICE_ID      "esp32-01"
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -246,26 +247,36 @@ void pushToAPI(float ds_c, float max_c, int32_t hr, int32_t spo2Val,
     return;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();  // Skip TLS cert check (fine for MVP)
-
   HTTPClient http;
-  String url = String("https://") + API_HOST + API_ENDPOINT;
-  http.begin(client, url);
+  
+  if (USE_HTTPS) {
+    WiFiClientSecure client;
+    client.setInsecure();  // Skip TLS cert check (fine for MVP)
+    String url = String("https://") + API_HOST + API_ENDPOINT;
+    http.begin(client, url);
+  } else {
+    WiFiClient client;
+    String url = String("http://") + API_HOST + API_ENDPOINT;
+    http.begin(client, url);
+  }
+
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(8000);
 
-  StaticJsonDocument<320> doc;
-  doc["device_id"]       = DEVICE_ID;
-  doc["timestamp_ms"]    = (uint32_t)millis();
-  doc["bpm"]             = hr;
-  doc["bpm_valid"]       = hrOk;
-  doc["spo2"]            = spo2Val;
-  doc["spo2_valid"]      = spo2Ok;
-  doc["temp_body_c"]     = serialized(String(ds_c,  2));
-  doc["temp_body_f"]     = serialized(String(ds_c * 9.0f / 5.0f + 32.0f, 2));
-  doc["temp_die_c"]      = serialized(String(max_c, 2));
-  doc["finger_detected"] = (irBuffer[BUFFER_SIZE - 1] >= 50000);
+  StaticJsonDocument<384> doc;
+  doc["device_id"]        = DEVICE_ID;
+  doc["timestamp_ms"]     = (uint32_t)millis();
+  doc["device_connected"] = true;
+  doc["bpm"]              = hr;
+  doc["bpm_valid"]        = hrOk;
+  doc["spo2"]             = spo2Val;
+  doc["spo2_valid"]       = spo2Ok;
+  doc["temp_body_c"]      = serialized(String(ds_c,  2));
+  doc["temp_body_f"]      = serialized(String(ds_c * 9.0f / 5.0f + 32.0f, 2));
+  doc["temp_die_c"]       = serialized(String(max_c, 2));
+  bool finger = (irBuffer[BUFFER_SIZE - 1] >= 50000);
+  doc["finger_detected"]  = finger;
+  doc["ir_raw"]           = irBuffer[BUFFER_SIZE - 1];
 
   // Only send ptt_ms once we have a valid reading (> 0)
   if (ptt > 0.0f) {
