@@ -152,8 +152,12 @@ def init_db() -> bool:
         # Database Schema Migrations for pre-existing tables
         for migration in [
             "ALTER TABLE patients ADD COLUMN device_id TEXT",
+            "ALTER TABLE patients ADD COLUMN is_simulated INTEGER DEFAULT 0",
             "ALTER TABLE readings ADD COLUMN patient_id TEXT",
             "ALTER TABLE readings ADD COLUMN session_id TEXT",
+            "ALTER TABLE readings ADD COLUMN temp_die_c REAL",
+            "ALTER TABLE readings ADD COLUMN temp_die_f REAL",
+            "ALTER TABLE readings ADD COLUMN is_simulated INTEGER DEFAULT 0",
         ]:
             try:
                 cursor.execute(migration)
@@ -394,6 +398,7 @@ def save_patient(patient_record: Dict[str, Any]) -> bool:
     details = patient_record.get("patient_details", {})
     acuity = patient_record.get("acuity", {})
     device_id = patient_record.get("device_id")
+    is_simulated = 1 if patient_record.get("is_simulated") else 0
     now_iso = datetime.now(timezone.utc).isoformat()
 
     try:
@@ -403,8 +408,8 @@ def save_patient(patient_record: Dict[str, Any]) -> bool:
                 chief_complaint, pain_level, symptoms, symptom_duration, medical_history,
                 current_medications, allergies, vital_signs,
                 acuity_esi, acuity_severity, acuity_score, acuity_action, contributing_factors,
-                medical_summary, status, doctor_notes, created_by_doctor, device_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                medical_summary, status, doctor_notes, created_by_doctor, device_id, is_simulated, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             p_id,
             details.get("first_name", ""),
@@ -429,6 +434,7 @@ def save_patient(patient_record: Dict[str, Any]) -> bool:
             patient_record.get("doctor_notes", ""),
             patient_record.get("created_by_doctor", "SYSTEM"),
             device_id,
+            is_simulated,
             patient_record.get("timestamp", now_iso),
             now_iso
         ))
@@ -442,7 +448,7 @@ def save_patient(patient_record: Dict[str, Any]) -> bool:
 
 
 def get_all_patients() -> List[Dict[str, Any]]:
-    """Fetches all patient records from SQLite."""
+    """Fetches all patient records from SQLite sorted by triage priority."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM patients ORDER BY acuity_esi ASC, acuity_score DESC, updated_at DESC")
@@ -502,13 +508,47 @@ def delete_patient(patient_id: str) -> bool:
     return deleted
 
 
+def clear_simulated_data() -> bool:
+    """Clears all simulated patients, monitoring sessions, and readings from SQLite."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM patients WHERE is_simulated = 1 OR created_by_doctor = 'SIMULATOR'")
+        cursor.execute("DELETE FROM readings WHERE is_simulated = 1 OR device_id LIKE 'sim-%'")
+        cursor.execute("DELETE FROM monitoring_sessions WHERE device_id LIKE 'sim-%'")
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing simulated data: {e}")
+        conn.close()
+        return False
+
+
+def clear_all_demo_patients() -> bool:
+    """Wipes any leftover demo test patients from SQLite database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM patients WHERE patient_id LIKE 'PAT-TEST-%'")
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing demo test patients: {e}")
+        conn.close()
+        return False
+
+
 def format_patient_row(r: sqlite3.Row) -> Dict[str, Any]:
     """Helper to convert sqlite3.Row into dict matching API schema."""
     row_keys = r.keys()
     device_id = r["device_id"] if "device_id" in row_keys else None
+    is_simulated = bool(r["is_simulated"]) if "is_simulated" in row_keys else False
     return {
         "patient_id": r["patient_id"],
         "device_id": device_id,
+        "is_simulated": is_simulated,
         "timestamp": r["created_at"],
         "updated_at": r["updated_at"],
         "status": r["status"],
@@ -550,8 +590,8 @@ def save_reading(reading_data: Dict[str, Any]) -> bool:
     try:
         cursor.execute("""
             INSERT INTO readings (
-                device_id, patient_id, session_id, timestamp_ms, bpm, spo2, temp_body_c, temp_body_f, sbp, dbp, ptt_ms, finger_detected, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                device_id, patient_id, session_id, timestamp_ms, bpm, spo2, temp_body_c, temp_body_f, temp_die_c, temp_die_f, sbp, dbp, ptt_ms, finger_detected, is_simulated, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             reading_data.get("device_id", "esp32-01"),
             reading_data.get("patient_id"),
@@ -561,10 +601,13 @@ def save_reading(reading_data: Dict[str, Any]) -> bool:
             reading_data.get("spo2", 0.0),
             reading_data.get("temp_body_c", 0.0),
             reading_data.get("temp_body_f", 0.0),
+            reading_data.get("temp_die_c"),
+            reading_data.get("temp_die_f"),
             reading_data.get("sbp"),
             reading_data.get("dbp"),
             reading_data.get("ptt_ms"),
             1 if reading_data.get("finger_detected") else 0,
+            1 if reading_data.get("is_simulated") else 0,
             now_iso
         ))
         conn.commit()

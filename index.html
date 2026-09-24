@@ -85,6 +85,55 @@
       </button>
     </div>
 
+    <!-- System Operational Mode & Triage Simulator Controller -->
+    <div class="glass-panel" style="padding: 1.1rem 1.5rem; margin-bottom: 1.5rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+        
+        <!-- Mode Selector Control -->
+        <div>
+          <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.4rem;">
+            Triage System Operational Mode
+          </div>
+          <div class="mode-selector-group">
+            <button id="btnModeDevice" class="mode-btn active" onclick="setSystemMode('device_only')">
+              Device Only
+            </button>
+            <button id="btnModeSim" class="mode-btn" onclick="setSystemMode('simulation_only')">
+              Simulation Only
+            </button>
+            <button id="btnModeHybrid" class="mode-btn" onclick="setSystemMode('device_with_simulation')">
+              Device with Simulation
+            </button>
+          </div>
+        </div>
+
+        <!-- Simulation Action Controls (Stop, Reset, Severe Consequences) -->
+        <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+          <div class="sim-badge" id="simStatusBadge">
+            MODE: <span id="simModeText">DEVICE ONLY</span> | STATUS: <span id="simStatusText">STANDBY</span>
+          </div>
+
+          <button class="btn-primary" id="btnStartStopSim" style="padding: 0.4rem 0.85rem; font-size: 0.8rem;" onclick="toggleSimulationStartStop()">
+            Start Simulation
+          </button>
+
+          <button class="btn-secondary" id="btnResetSim" style="padding: 0.4rem 0.85rem; font-size: 0.8rem;" onclick="handleSimulationReset()">
+            Stop & Reset
+          </button>
+
+          <button class="btn-secondary" id="btnInjectSevere" style="padding: 0.4rem 0.85rem; font-size: 0.8rem; border-color: #000;" onclick="injectSevereTestPatient()">
+            Inject Critical Patient
+          </button>
+
+          <label style="display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; cursor: pointer; background: var(--surface-hover); padding: 0.4rem 0.75rem; border-radius: 4px; border: 1px solid var(--border);">
+            <input type="checkbox" id="chkSevereConsequences" onchange="toggleSevereSetting(this.checked)" checked>
+            Allow Severe Vitals
+          </label>
+        </div>
+
+      </div>
+    </div>
+
     <!-- Live Telemetry KPI Cards -->
     <div class="kpi-grid">
 
@@ -118,18 +167,34 @@
         </div>
       </div>
 
-      <!-- Body Temperature KPI -->
-      <div class="glass-panel kpi-card">
+      <!-- Dual Temperature Sensors KPI (DS18B20 + MAX30102) -->
+      <div class="glass-panel kpi-card" style="grid-column: span 1;">
         <div class="kpi-header">
-          <span class="kpi-label">Body Temp</span>
+          <span class="kpi-label">Temperature (Dual Sensor)</span>
         </div>
-        <div class="kpi-value-wrap">
-          <span class="kpi-value" id="kpiTemp">--</span>
-          <span class="kpi-unit">°C</span>
+        <div class="kpi-value-wrap" style="flex-direction: column; align-items: stretch; gap: 0.4rem;">
+          <!-- DS18B20 Reading -->
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted);">DS18B20 (Body):</span>
+            <div>
+              <span class="kpi-value" id="kpiTempDs" style="font-size: 1.5rem;">--</span>
+              <span class="kpi-unit">°C</span>
+              <span id="kpiTempDsF" style="font-size: 0.75rem; color: var(--text-dim); margin-left: 0.2rem;">(-- °F)</span>
+            </div>
+          </div>
+          <!-- MAX30102 Reading -->
+          <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); padding-top: 0.35rem;">
+            <span style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted);">MAX30102 (Die):</span>
+            <div>
+              <span class="kpi-value" id="kpiTempMax" style="font-size: 1.5rem;">--</span>
+              <span class="kpi-unit">°C</span>
+              <span id="kpiTempMaxF" style="font-size: 0.75rem; color: var(--text-dim); margin-left: 0.2rem;">(-- °F)</span>
+            </div>
+          </div>
         </div>
-        <div class="kpi-footer">
-          <span id="kpiTempF">-- °F</span>
-          <span class="kpi-status-badge badge-normal" id="kpiTempBadge">DS18B20</span>
+        <div class="kpi-footer" style="margin-top: 0.4rem;">
+          <span>Dual Sensor Stream</span>
+          <span class="kpi-status-badge badge-normal" id="kpiTempBadge">DS18B20 + MAX30102</span>
         </div>
       </div>
 
@@ -139,7 +204,7 @@
           <span class="kpi-label">Est. Blood Pressure</span>
         </div>
         <div class="kpi-value-wrap">
-          <span class="kpi-value" id="kpiBp" style="font-size: 2.1rem;">-- / --</span>
+          <span class="kpi-value" id="kpiBp" style="font-size: 1.8rem;">-- / --</span>
           <span class="kpi-unit">mmHg</span>
         </div>
         <div class="kpi-footer">

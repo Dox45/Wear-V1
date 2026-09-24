@@ -61,6 +61,7 @@ TABLE_SCHEMAS = {
             doctor_notes TEXT DEFAULT '',
             created_by_doctor TEXT DEFAULT 'SYSTEM',
             device_id TEXT,
+            is_simulated INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -76,10 +77,13 @@ TABLE_SCHEMAS = {
             spo2 REAL,
             temp_body_c REAL,
             temp_body_f REAL,
+            temp_die_c REAL,
+            temp_die_f REAL,
             sbp REAL,
             dbp REAL,
             ptt_ms REAL,
             finger_detected INTEGER DEFAULT 1,
+            is_simulated INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
         )
     """,
@@ -108,8 +112,12 @@ TABLE_SCHEMAS = {
 # Required Column Migrations for Schema Upgrades
 COLUMN_MIGRATIONS = [
     ("patients", "device_id", "TEXT"),
+    ("patients", "is_simulated", "INTEGER DEFAULT 0"),
     ("readings", "patient_id", "TEXT"),
     ("readings", "session_id", "TEXT"),
+    ("readings", "temp_die_c", "REAL"),
+    ("readings", "temp_die_f", "REAL"),
+    ("readings", "is_simulated", "INTEGER DEFAULT 0"),
 ]
 
 # Production Performance Indexes

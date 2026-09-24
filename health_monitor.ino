@@ -274,6 +274,7 @@ void pushToAPI(float ds_c, float max_c, int32_t hr, int32_t spo2Val,
   doc["temp_body_c"]      = serialized(String(ds_c,  2));
   doc["temp_body_f"]      = serialized(String(ds_c * 9.0f / 5.0f + 32.0f, 2));
   doc["temp_die_c"]       = serialized(String(max_c, 2));
+  doc["temp_die_f"]       = serialized(String(max_c * 9.0f / 5.0f + 32.0f, 2));
   bool finger = (irBuffer[BUFFER_SIZE - 1] >= 50000);
   doc["finger_detected"]  = finger;
   doc["ir_raw"]           = irBuffer[BUFFER_SIZE - 1];

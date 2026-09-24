@@ -53,6 +53,13 @@ let ppgCanvas, ppgCtx;
 let animationFrameId = null;
 let wavePhase = 0;
 
+// Global Simulation State
+let currentSimState = {
+  mode: 'device_only',
+  running: false,
+  allow_severe: true
+};
+
 // Initialize Page
 document.addEventListener("DOMContentLoaded", () => {
   initPPGCanvas();
@@ -61,6 +68,7 @@ document.addEventListener("DOMContentLoaded", () => {
   checkDoctorSession();
   fetchQueue();
   pollTelemetry();
+  fetchSimulationState();
 
   // Periodic timers for real-time live updates
   setInterval(pollTelemetry, 1000); // Poll vitals telemetry every 1s
@@ -109,7 +117,7 @@ function renderPPG() {
 
   ppgCtx.beginPath();
   ppgCtx.lineWidth = 2.5;
-  ppgCtx.strokeStyle = finger ? "#38bdf8" : "rgba(148, 163, 184, 0.3)";
+  ppgCtx.strokeStyle = finger ? "#000000" : "rgba(100, 116, 139, 0.4)";
 
   for (let x = 0; x < width; x++) {
     let y = midY;
@@ -128,7 +136,7 @@ function renderPPG() {
   requestAnimationFrame(renderPPG);
 }
 
-// Chart.js 10-Min Vitals Chart
+// Chart.js 10-Min Vitals Chart (Black & White Aesthetics)
 function initChart() {
   const chartEl = document.getElementById("historyChart");
   if (!chartEl) return;
@@ -140,37 +148,45 @@ function initChart() {
       datasets: [
         {
           label: 'Heart Rate (BPM)',
-          borderColor: '#f87171',
-          backgroundColor: 'rgba(248, 113, 113, 0.1)',
+          borderColor: '#000000',
+          backgroundColor: 'rgba(0, 0, 0, 0.05)',
           data: [],
           tension: 0.3,
           borderWidth: 2
         },
         {
           label: 'SpO2 (%)',
-          borderColor: '#38bdf8',
-          backgroundColor: 'rgba(56, 189, 248, 0.1)',
+          borderColor: '#475569',
+          backgroundColor: 'rgba(71, 85, 105, 0.05)',
           data: [],
           tension: 0.3,
           borderWidth: 2
         },
         {
-          label: 'Temp (°C)',
-          borderColor: '#fbbf24',
-          backgroundColor: 'rgba(251, 191, 36, 0.1)',
+          label: 'DS18B20 Temp (°C)',
+          borderColor: '#000000',
+          borderDash: [4, 4],
           data: [],
           tension: 0.3,
           borderWidth: 2
+        },
+        {
+          label: 'MAX30102 Temp (°C)',
+          borderColor: '#94a3b8',
+          borderDash: [2, 2],
+          data: [],
+          tension: 0.3,
+          borderWidth: 1.5
         }
       ]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#94a3b8' } } },
+      plugins: { legend: { labels: { color: '#000000', font: { family: 'Inter', weight: '600' } } } },
       scales: {
-        x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.04)' } },
-        y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.04)' } }
+        x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(0,0,0,0.06)' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(0,0,0,0.06)' } }
       }
     }
   });
@@ -187,6 +203,11 @@ function initSSE() {
         if (msg.type === 'telemetry') {
           updateTelemetryUI(msg.data);
         } else if (msg.type === 'triage_update') {
+          fetchQueue();
+        } else if (msg.type === 'simulation_state') {
+          updateSimulationUI(msg.state);
+        } else if (msg.type === 'reset') {
+          fetchSimulationState();
           fetchQueue();
         }
       } catch (e) { console.error("SSE parse error:", e); }
@@ -222,7 +243,7 @@ function updateTelemetryUI(data) {
   if (devBadge && devText) {
     if (data.device_connected || data.bpm > 0) {
       devBadge.classList.add("connected");
-      devText.innerText = "CONNECTED / STREAMING";
+      devText.innerText = data.is_simulated ? "SIMULATED STREAMING" : "CONNECTED / STREAMING";
     } else {
       devBadge.classList.remove("connected");
       devText.innerText = "DISCONNECTED";
@@ -249,15 +270,24 @@ function updateTelemetryUI(data) {
   // Update KPI Values
   const elBpm = document.getElementById("kpiBpm");
   const elSpo2 = document.getElementById("kpiSpo2");
-  const elTemp = document.getElementById("kpiTemp");
-  const elTempF = document.getElementById("kpiTempF");
+  
+  // Dual Temperature Readings (DS18B20 + MAX30102)
+  const elTempDs = document.getElementById("kpiTempDs");
+  const elTempDsF = document.getElementById("kpiTempDsF");
+  const elTempMax = document.getElementById("kpiTempMax");
+  const elTempMaxF = document.getElementById("kpiTempMaxF");
+
   const elBp = document.getElementById("kpiBp");
   const elPtt = document.getElementById("kpiPtt");
 
   if (elBpm) elBpm.innerText = data.bpm || "--";
   if (elSpo2) elSpo2.innerText = data.spo2 || "--";
-  if (elTemp) elTemp.innerText = data.temp_body_c ? data.temp_body_c.toFixed(1) : "--";
-  if (elTempF) elTempF.innerText = data.temp_body_f ? `${data.temp_body_f.toFixed(1)} °F` : "-- °F";
+  
+  if (elTempDs) elTempDs.innerText = data.temp_body_c ? data.temp_body_c.toFixed(1) : "--";
+  if (elTempDsF) elTempDsF.innerText = data.temp_body_f ? `(${data.temp_body_f.toFixed(1)} °F)` : "(-- °F)";
+
+  if (elTempMax) elTempMax.innerText = data.temp_die_c ? data.temp_die_c.toFixed(1) : "--";
+  if (elTempMaxF) elTempMaxF.innerText = data.temp_die_f ? `(${data.temp_die_f.toFixed(1)} °F)` : "(-- °F)";
 
   if (elBp) {
     if (data.sbp && data.dbp) {
@@ -271,18 +301,134 @@ function updateTelemetryUI(data) {
     elPtt.innerText = data.ptt_ms ? `PTT: ${data.ptt_ms.toFixed(1)} ms` : "PTT: -- ms";
   }
 
-  // Append to Chart
-  if (data.bpm > 0 && historyChart) {
+  // Append to 10-Minute Vitals Chart
+  if ((data.bpm > 0 || data.temp_body_c > 0) && historyChart) {
     const timeLabel = new Date().toLocaleTimeString();
     if (historyChart.data.labels.length > 20) {
       historyChart.data.labels.shift();
       historyChart.data.datasets.forEach(ds => ds.data.shift());
     }
     historyChart.data.labels.push(timeLabel);
-    historyChart.data.datasets[0].data.push(data.bpm);
-    historyChart.data.datasets[1].data.push(data.spo2);
-    historyChart.data.datasets[2].data.push(data.temp_body_c);
+    historyChart.data.datasets[0].data.push(data.bpm || 0);
+    historyChart.data.datasets[1].data.push(data.spo2 || 0);
+    historyChart.data.datasets[2].data.push(data.temp_body_c || null);
+    historyChart.data.datasets[3].data.push(data.temp_die_c || null);
     historyChart.update('none');
+  }
+}
+
+// ─── Simulation System API Actions ───────────────────────────────────────────
+
+async function fetchSimulationState() {
+  try {
+    const res = await apiFetch('/api/simulation/state');
+    if (res.ok) {
+      const data = await res.json();
+      updateSimulationUI(data.state);
+    }
+  } catch (e) {}
+}
+
+function updateSimulationUI(state) {
+  if (!state) return;
+  currentSimState = state;
+  const modeText = document.getElementById('simModeText');
+  const statusText = document.getElementById('simStatusText');
+  const btnStartStop = document.getElementById('btnStartStopSim');
+  const chkSevere = document.getElementById('chkSevereConsequences');
+
+  const modeFormatted = (state.mode || 'device_only').replace(/_/g, ' ').toUpperCase();
+  if (modeText) modeText.innerText = modeFormatted;
+  if (statusText) statusText.innerText = state.running ? 'RUNNING / STREAMING' : 'STOPPED / STANDBY';
+
+  if (btnStartStop) {
+    btnStartStop.innerText = state.running ? 'Pause Simulation' : 'Start Simulation';
+    btnStartStop.className = state.running ? 'btn-secondary' : 'btn-primary';
+  }
+
+  if (chkSevere) chkSevere.checked = !!state.allow_severe;
+
+  // Highlight active mode selector button
+  const btnDevice = document.getElementById('btnModeDevice');
+  const btnSim = document.getElementById('btnModeSim');
+  const btnHybrid = document.getElementById('btnModeHybrid');
+
+  if (btnDevice) btnDevice.classList.toggle('active', state.mode === 'device_only');
+  if (btnSim) btnSim.classList.toggle('active', state.mode === 'simulation_only');
+  if (btnHybrid) btnHybrid.classList.toggle('active', state.mode === 'device_with_simulation');
+}
+
+async function setSystemMode(mode) {
+  try {
+    const res = await apiFetch('/api/simulation/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: mode })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      updateSimulationUI(data.state);
+      fetchQueue();
+    }
+  } catch (e) {
+    alert("Error setting operational mode.");
+  }
+}
+
+async function toggleSimulationStartStop() {
+  const endpoint = currentSimState.running ? '/api/simulation/stop' : '/api/simulation/start';
+  try {
+    const res = await apiFetch(endpoint, { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      updateSimulationUI(data.state);
+    }
+  } catch (e) {}
+}
+
+async function handleSimulationReset() {
+  if (!confirm("Stop simulation and reset all simulated data?")) return;
+  try {
+    const res = await apiFetch('/api/simulation/reset', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      updateSimulationUI(data.state);
+      latestTelemetry = null;
+      if (historyChart) {
+        historyChart.data.labels = [];
+        historyChart.data.datasets.forEach(ds => ds.data = []);
+        historyChart.update();
+      }
+      fetchQueue();
+    }
+  } catch (e) {
+    alert("Error resetting simulation.");
+  }
+}
+
+async function toggleSevereSetting(allow) {
+  try {
+    const res = await apiFetch('/api/simulation/severe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allow_severe: allow })
+    });
+    if (res.ok) {
+      currentSimState.allow_severe = allow;
+    }
+  } catch (e) {}
+}
+
+async function injectSevereTestPatient() {
+  try {
+    const res = await apiFetch('/api/simulation/inject_severe', { method: 'POST' });
+    if (res.ok) {
+      const result = await res.json();
+      fetchQueue();
+      alert(`Critical patient ${result.patient_id} (ESI Level ${result.acuity.esi_level}) injected to test triage ranking!`);
+    }
+  } catch (e) {
+    alert("Error injecting severe patient.");
   }
 }
 

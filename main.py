@@ -47,10 +47,13 @@ from database import (
     get_all_active_sessions,
     get_patient_readings,
     get_latest_patient_reading,
+    clear_simulated_data,
+    clear_all_demo_patients,
 )
 
-# Initialize SQLite database on startup
+# Initialize SQLite database on startup and purge old demo patients
 init_db()
+clear_all_demo_patients()
 
 # Initialize Kafka topics in background
 init_kafka_topics()
@@ -120,8 +123,10 @@ class Reading(BaseModel):
     temp_body_c:      float
     temp_body_f:      Optional[float] = None
     temp_die_c:       Optional[float] = None
+    temp_die_f:       Optional[float] = None
     finger_detected:  bool  = True
     device_connected: Optional[bool]  = True
+    is_simulated:     Optional[bool]  = False
     ir_raw:           Optional[int]   = None
     ptt_ms:           Optional[float] = Field(
         None,
@@ -227,8 +232,8 @@ async def broadcast_sse(event_data: dict):
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard():
-    """Serves biowear_dashboard.html UI."""
-    dashboard_path = os.path.join(os.path.dirname(__file__), "biowear_dashboard.html")
+    """Serves index.html UI."""
+    dashboard_path = os.path.join(os.path.dirname(__file__), "index.html")
     if os.path.exists(dashboard_path):
         with open(dashboard_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
@@ -316,9 +321,14 @@ async def ingest_reading(reading: Reading):
     patient_id = active_session["patient_id"] if active_session else None
     session_id = active_session["session_id"] if active_session else None
 
+    temp_die_f = reading.temp_die_f
+    if reading.temp_die_c is not None and temp_die_f is None:
+        temp_die_f = round(reading.temp_die_c * 9.0 / 5.0 + 32.0, 2)
+
     record.update({
         "server_time":     datetime.now(timezone.utc).isoformat(),
         "temp_body_f":     round(reading.temp_body_c * 9.0 / 5.0 + 32.0, 2),
+        "temp_die_f":      temp_die_f,
         "sbp":             sbp,
         "dbp":             dbp,
         "bp_valid":        bp_valid,
@@ -632,7 +642,269 @@ async def health_check():
         "service": "BioWear Medical Triage Cloud API",
         "sse_subscribers": len(sse_subscribers),
         "total_triaged_patients": len(patient_store),
+        "simulation_state": sim_state,
     }
+
+
+# ─── Simulation System & Triage Controller ────────────────────────────────────
+
+sim_state = {
+    "mode": "device_only",  # device_only, simulation_only, device_with_simulation
+    "running": False,
+    "allow_severe": True,
+}
+sim_task: Optional[asyncio.Task] = None
+
+
+class SimModeReq(BaseModel):
+    mode: str = Field(..., description="device_only, simulation_only, device_with_simulation")
+
+
+class SimSevereReq(BaseModel):
+    allow_severe: bool
+
+
+async def run_simulation_loop():
+    """Background task generating natural & severe simulated telemetry and triaged patients."""
+    import random
+    sim_count = 1
+    
+    sim_profiles = [
+        {"name": ("Amina", "Yusuf"), "complaint": "Severe crushing chest pain radiating to jaw", "symptoms": ["Chest Pain", "Shortness of Breath"], "history": ["Hypertension"]},
+        {"name": ("Chidi", "Okonkwo"), "complaint": "High fever with acute chills and rigors", "symptoms": ["High Fever", "Altered Mental Status"], "history": ["Diabetes"]},
+        {"name": ("Fatima", "Bello"), "complaint": "Persistent lightheadedness and headache", "symptoms": ["Dizziness"], "history": []},
+        {"name": ("Emeka", "Nnamdi"), "complaint": "Wheezing and shortness of breath", "symptoms": ["Shortness of Breath"], "history": ["COPD / Asthma"]},
+    ]
+
+    while sim_state["running"]:
+        try:
+            await asyncio.sleep(2.0)
+            if not sim_state["running"]:
+                break
+
+            # Determine whether this cycle generates severe critical vitals
+            is_severe = sim_state["allow_severe"] and (random.random() < 0.45)
+
+            if is_severe:
+                bpm = random.randint(138, 165)
+                spo2 = float(random.randint(84, 89))
+                temp_ds_c = round(random.uniform(40.1, 41.3), 1)
+                temp_max_c = round(random.uniform(38.2, 39.6), 1)
+                sbp = random.randint(180, 205)
+                dbp = random.randint(110, 125)
+                ptt_ms = round(random.uniform(310.0, 350.0), 1)
+            else:
+                bpm = random.randint(68, 86)
+                spo2 = float(random.randint(96, 99))
+                temp_ds_c = round(random.uniform(36.5, 37.2), 1)
+                temp_max_c = round(random.uniform(33.5, 35.0), 1)
+                sbp = random.randint(115, 128)
+                dbp = random.randint(76, 84)
+                ptt_ms = round(random.uniform(430.0, 490.0), 1)
+
+            reading_payload = {
+                "device_id": "sim-esp32-01",
+                "timestamp_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "bpm": bpm,
+                "bpm_valid": True,
+                "spo2": spo2,
+                "spo2_valid": True,
+                "temp_body_c": temp_ds_c,
+                "temp_body_f": round(temp_ds_c * 9.0 / 5.0 + 32.0, 1),
+                "temp_die_c": temp_max_c,
+                "temp_die_f": round(temp_max_c * 9.0 / 5.0 + 32.0, 1),
+                "finger_detected": True,
+                "device_connected": True,
+                "is_simulated": True,
+                "ptt_ms": ptt_ms,
+                "sbp": sbp,
+                "dbp": dbp,
+                "bp_valid": True,
+                "server_time": datetime.now(timezone.utc).isoformat(),
+            }
+
+            global latest_reading
+            latest_reading = reading_payload
+            realtime_history.append(reading_payload)
+            tenmin_history.append(reading_payload)
+            save_reading(reading_payload)
+
+            await broadcast_sse({"type": "telemetry", "data": reading_payload})
+
+            # Periodically generate simulated patient intake for triage queue testing
+            if random.random() < 0.35:
+                prof = random.choice(sim_profiles)
+                p_id = f"SIM-PAT-{sim_count:03d}"
+                sim_count += 1
+
+                p_record = {
+                    "patient_id": p_id,
+                    "device_id": "sim-esp32-01",
+                    "is_simulated": True,
+                    "patient_details": {
+                        "first_name": prof["name"][0],
+                        "last_name": prof["name"][1],
+                        "date_of_birth": "1988-03-24",
+                        "gender": "Female" if sim_count % 2 == 0 else "Male"
+                    },
+                    "chief_complaint": prof["complaint"],
+                    "pain_level": random.randint(8, 10) if is_severe else random.randint(2, 5),
+                    "symptoms": prof["symptoms"],
+                    "medical_history": prof["history"],
+                    "symptom_duration": "Acute",
+                    "latest_vitals": {
+                        "bpm": bpm,
+                        "spo2": spo2,
+                        "temperature": temp_ds_c,
+                        "sbp": sbp,
+                        "dbp": dbp,
+                        "ptt_ms": ptt_ms,
+                    },
+                    "created_by_doctor": "SIMULATOR",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                acuity_res = compute_acuity(p_record)
+                p_record["acuity"] = acuity_res
+                p_record["medical_summary"] = f"Simulated clinical intake for {prof['name'][0]} {prof['name'][1]}. Chief Complaint: {prof['complaint']}. ESI Level: {acuity_res['esi_level']}."
+
+                save_patient(p_record)
+                patient_store[p_id] = p_record
+                await broadcast_sse({"type": "triage_update", "patient_id": p_id, "acuity": acuity_res})
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            await asyncio.sleep(2)
+
+
+@app.get("/api/simulation/state")
+async def get_simulation_state():
+    """Returns current simulation mode and execution state."""
+    return {"status": "success", "state": sim_state}
+
+
+@app.post("/api/simulation/mode")
+async def set_simulation_mode(req: SimModeReq):
+    """Sets system operation mode: device_only, simulation_only, device_with_simulation."""
+    valid_modes = {"device_only", "simulation_only", "device_with_simulation"}
+    if req.mode not in valid_modes:
+        raise HTTPException(400, f"Invalid mode '{req.mode}'. Must be one of {valid_modes}")
+    
+    sim_state["mode"] = req.mode
+    
+    # Auto start/stop simulation based on mode selection
+    global sim_task
+    if req.mode in ("simulation_only", "device_with_simulation"):
+        if not sim_state["running"]:
+            sim_state["running"] = True
+            sim_task = asyncio.create_task(run_simulation_loop())
+    else:  # device_only
+        if sim_state["running"]:
+            sim_state["running"] = False
+            if sim_task and not sim_task.done():
+                sim_task.cancel()
+                sim_task = None
+
+    await broadcast_sse({"type": "simulation_state", "state": sim_state})
+    return {"status": "success", "state": sim_state}
+
+
+@app.post("/api/simulation/start")
+async def start_simulation():
+    """Starts simulation loop."""
+    global sim_task
+    if not sim_state["running"]:
+        sim_state["running"] = True
+        sim_task = asyncio.create_task(run_simulation_loop())
+    await broadcast_sse({"type": "simulation_state", "state": sim_state})
+    return {"status": "success", "message": "Simulation started", "state": sim_state}
+
+
+@app.post("/api/simulation/stop")
+async def stop_simulation():
+    """Stops simulation loop without resetting database."""
+    global sim_task
+    sim_state["running"] = False
+    if sim_task and not sim_task.done():
+        sim_task.cancel()
+        sim_task = None
+    await broadcast_sse({"type": "simulation_state", "state": sim_state})
+    return {"status": "success", "message": "Simulation stopped", "state": sim_state}
+
+
+@app.post("/api/simulation/reset")
+async def reset_simulation():
+    """Stops simulation loop, purges simulated patients and readings from DB and memory."""
+    global sim_task, latest_reading
+    sim_state["running"] = False
+    if sim_task and not sim_task.done():
+        sim_task.cancel()
+        sim_task = None
+
+    # Clear simulated and test entries from SQLite database
+    clear_simulated_data()
+    clear_all_demo_patients()
+
+    # Clear in-memory state
+    realtime_history.clear()
+    tenmin_history.clear()
+    latest_reading = None
+    patient_store.clear()
+
+    await broadcast_sse({"type": "reset", "message": "Simulation reset completed"})
+    await broadcast_sse({"type": "triage_update", "action": "reset"})
+
+    return {"status": "success", "message": "Simulation reset and cleared successfully", "state": sim_state}
+
+
+@app.post("/api/simulation/severe")
+async def toggle_severe_vitals(req: SimSevereReq):
+    """Toggles severe consequences setting in simulation."""
+    sim_state["allow_severe"] = req.allow_severe
+    await broadcast_sse({"type": "simulation_state", "state": sim_state})
+    return {"status": "success", "allow_severe": sim_state["allow_severe"]}
+
+
+@app.post("/api/simulation/inject_severe")
+async def inject_severe_patient():
+    """Immediately injects a severe critical patient to verify triage priority ranking."""
+    import random
+    p_id = f"CRIT-PAT-{random.randint(100, 999)}"
+    record = {
+        "patient_id": p_id,
+        "device_id": "sim-esp32-CRIT",
+        "is_simulated": True,
+        "patient_details": {
+            "first_name": "Emergency",
+            "last_name": "Critical Patient",
+            "date_of_birth": "1975-11-04",
+            "gender": "Male"
+        },
+        "chief_complaint": "CRITICAL HYPOXIA & CHEST PAIN - Resuscitation Needed",
+        "pain_level": 10,
+        "symptoms": ["Chest Pain", "Shortness of Breath", "Altered Mental Status"],
+        "medical_history": ["Heart Disease", "Hypertension"],
+        "symptom_duration": "Immediate",
+        "latest_vitals": {
+            "bpm": 158,
+            "spo2": 84,
+            "temperature": 40.8,
+            "sbp": 195,
+            "dbp": 120,
+            "ptt_ms": 315.0,
+        },
+        "created_by_doctor": "SIMULATOR_TEST",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    acuity_res = compute_acuity(record)
+    record["acuity"] = acuity_res
+    record["medical_summary"] = "CRITICAL EMERGENCY INTAKE: Patient exhibits severe hypoxia (SpO2 84%), hyperpyrexia (40.8°C), and hypertensive crisis."
+
+    save_patient(record)
+    patient_store[p_id] = record
+
+    await broadcast_sse({"type": "triage_update", "patient_id": p_id, "acuity": acuity_res})
+    return {"status": "success", "patient_id": p_id, "acuity": acuity_res}
 
 
 if __name__ == "__main__":

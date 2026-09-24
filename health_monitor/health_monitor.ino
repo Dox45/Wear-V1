@@ -38,10 +38,13 @@
   SpO2 acquisition fix retained unchanged below.)
 */
 
+// #define WIFI_SSID      "TECNO CAMON 40 Pro"
+// #define WIFI_PASSWORD  "hamsphone3"
+
 #define WIFI_SSID      "mayberry"
 #define WIFI_PASSWORD  "pass123now2"
 
-#define API_HOST       "elaborate-flavorful-virtuous.ngrok-free.dev"   // Host domain without protocol (e.g. domain.ngrok-free.dev or IP:port)
+#define API_HOST       "medical-triage-v2.onrender.com"   // Host domain without protocol (e.g. domain.ngrok-free.dev or IP:port)
 #define API_ENDPOINT   "/readings"
 #define USE_HTTPS      true
 
@@ -1155,6 +1158,9 @@ void pushToAPI(
 
   doc["temp_die_c"] =
     max_c;
+
+  doc["temp_die_f"] =
+    max_c * 9.0f / 5.0f + 32.0f;
 
   doc["finger_detected"] =
     fingerDetected;

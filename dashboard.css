@@ -496,3 +496,48 @@ header {
   .form-row { flex-direction: column; gap: 0; }
   .checkbox-grid { grid-template-columns: 1fr; }
 }
+
+/* Mode Selector Group (Black & White Aesthetics) */
+.mode-selector-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-hover);
+}
+
+.mode-btn {
+  padding: 0.45rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.mode-btn:hover {
+  background: #f1f5f9;
+  color: var(--text-main);
+}
+
+.mode-btn.active {
+  background: #000000;
+  color: #ffffff;
+}
+
+.sim-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.4rem 0.75rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-main);
+  letter-spacing: 0.03em;
+}
