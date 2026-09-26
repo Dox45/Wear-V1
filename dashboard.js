@@ -52,6 +52,7 @@ let historyChart = null;
 let ppgCanvas, ppgCtx;
 let animationFrameId = null;
 let wavePhase = 0;
+let hasPromptedTouchRegister = false;
 
 // Global Simulation State
 let currentSimState = {
@@ -237,6 +238,16 @@ async function pollTelemetry() {
 function updateTelemetryUI(data) {
   latestTelemetry = data;
 
+  // Touch trigger prompt for registration if finger detected and no active user session bound
+  if (data.finger_detected && !data.patient_id) {
+    if (!hasPromptedTouchRegister) {
+      hasPromptedTouchRegister = true;
+      openTouchRegisterModal(data.device_id || "esp32-01");
+    }
+  } else if (!data.finger_detected) {
+    hasPromptedTouchRegister = false;
+  }
+
   // Update Device Connection Status
   const devBadge = document.getElementById("deviceStatusBadge");
   const devText = document.getElementById("deviceStatusText");
@@ -279,6 +290,7 @@ function updateTelemetryUI(data) {
 
   const elBp = document.getElementById("kpiBp");
   const elPtt = document.getElementById("kpiPtt");
+  const elLatency = document.getElementById("kpiLatency");
 
   if (elBpm) elBpm.innerText = data.bpm || "--";
   if (elSpo2) elSpo2.innerText = data.spo2 || "--";
@@ -300,6 +312,13 @@ function updateTelemetryUI(data) {
   if (elPtt) {
     elPtt.innerText = data.ptt_ms ? `PTT: ${data.ptt_ms.toFixed(1)} ms` : "PTT: -- ms";
   }
+
+  if (elLatency) {
+    elLatency.innerText = data.latency_ms ? data.latency_ms.toFixed(1) : "--";
+  }
+
+  // Re-render registered queue to keep green active highlight up to date
+  fetchQueue();
 
   // Append to 10-Minute Vitals Chart
   if ((data.bpm > 0 || data.temp_body_c > 0) && historyChart) {
@@ -432,6 +451,8 @@ async function injectSevereTestPatient() {
   }
 }
 
+let allRegisteredPatients = [];
+
 // Fetch and Render Triage Queue
 async function fetchQueue() {
   try {
@@ -443,48 +464,51 @@ async function fetchQueue() {
 }
 
 function renderQueue(queue) {
+  allRegisteredPatients = queue;
   const tbody = document.getElementById("queueTableBody");
   const countBadge = document.getElementById("queueCountBadge");
-  if (countBadge) countBadge.innerText = `${queue.length} Patients`;
+  if (countBadge) countBadge.innerText = `${queue.length} Users`;
 
   if (!tbody) return;
 
   if (queue.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-dim); padding: 2rem;">No triaged patients in queue. Click "New Patient Intake" to add one.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-dim); padding: 2rem;">No registered users. Place finger on sensor to register a user.</td></tr>`;
     return;
   }
 
+  const activePatientId = latestTelemetry?.patient_id;
+  const activeDeviceId = latestTelemetry?.device_id;
+  const fingerActive = latestTelemetry?.finger_detected;
+
   tbody.innerHTML = queue.map(p => {
-    const name = `${p.patient_details.first_name} ${p.patient_details.last_name}`;
-    const esi = p.acuity?.esi_level || 5;
-    const severity = p.acuity?.severity || 'MINIMAL';
-    const rawScore = p.acuity?.raw_score || 0;
-    const status = p.status || 'TRIAGED';
-    const statusClass = `status-${status.toLowerCase()}`;
+    const name = `${p.patient_details?.first_name || ''} ${p.patient_details?.last_name || ''}`.trim() || p.patient_id;
+    const isActive = (activePatientId && p.patient_id === activePatientId) ||
+                     (p.device_id && p.device_id === activeDeviceId && fingerActive);
+
+    const rowClass = isActive ? "user-row-active" : "";
+    const statusMarkup = isActive
+      ? `<span class="badge-active-green">LIVE TRACKING</span>`
+      : `<span class="status-tag status-${(p.status || 'TRIAGED').toLowerCase()}">${(p.status || 'TRIAGED').replace('_', ' ')}</span>`;
+
     const deviceBadge = p.device_id
       ? `<span style="font-size:0.7rem; color:var(--sky); background:rgba(56,189,248,0.1); padding:0.15rem 0.4rem; border-radius:4px; margin-left:0.4rem;"><i class="fa-solid fa-microchip"></i> ${p.device_id}</span>`
       : '';
 
     return `
-      <tr>
+      <tr class="${rowClass}">
         <td>
-          <div class="patient-name">${name}</div>
-          <div class="patient-id-tag">${p.patient_id}${deviceBadge}</div>
+          <div class="patient-name" style="font-weight:700;">${name}</div>
+          <div class="patient-id-tag">${p.patient_id}</div>
         </td>
         <td>
-          <span class="esi-tag esi-${esi}">
-            ESI ${esi} - ${severity}
-          </span>
-          <span class="status-tag ${statusClass}" style="margin-left: 0.4rem;">
-            ${status.replace('_', ' ')}
-          </span>
+          ${statusMarkup}
         </td>
         <td>
-          <span style="font-family: 'JetBrains Mono'; font-weight: 700;">${rawScore} pts</span>
+          ${deviceBadge || '<span style="color:var(--text-muted); font-size:0.8rem;">Standby</span>'}
         </td>
         <td>
-          <button class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.75rem;" onclick="viewPatientDetail('${p.patient_id}')">
-            View Profile
+          <button class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.75rem;" onclick="openUserProfileModal('${p.patient_id}')">
+            View Vitals Profile
           </button>
         </td>
       </tr>
@@ -492,21 +516,171 @@ function renderQueue(queue) {
   }).join('');
 }
 
-// Modals Handling
-function openIntakeModal() {
-  if (!currentDoctor) {
-    alert("Doctor authentication required. Please log in to access Patient Intake.");
-    openAuthModal();
-    return;
+// Touch Registration Modal Handlers
+function openTouchRegisterModal(deviceId = "esp32-01") {
+  const modal = document.getElementById("touchRegisterModal");
+  const select = document.getElementById("touchSelectUser");
+
+  if (select) {
+    select.innerHTML = '<option value="">-- Create New Registered User --</option>' +
+      allRegisteredPatients.map(p => {
+        const name = `${p.patient_details?.first_name || ''} ${p.patient_details?.last_name || ''}`.trim() || p.patient_id;
+        return `<option value="${p.patient_id}">${name} (${p.patient_id})</option>`;
+      }).join('');
   }
-  const modal = document.getElementById("intakeModal");
+
+  const inputName = document.getElementById("touchRegisterName");
+  if (inputName) {
+    inputName.value = "";
+    inputName.required = true;
+    inputName.disabled = false;
+  }
+
   if (modal) modal.classList.add("active");
 }
 
-function closeIntakeModal() {
-  const modal = document.getElementById("intakeModal");
+function closeTouchRegisterModal() {
+  const modal = document.getElementById("touchRegisterModal");
   if (modal) modal.classList.remove("active");
 }
+
+function onSelectExistingUser(patientId) {
+  const inputName = document.getElementById("touchRegisterName");
+  if (patientId) {
+    inputName.required = false;
+    inputName.disabled = true;
+  } else {
+    inputName.required = true;
+    inputName.disabled = false;
+  }
+}
+
+async function handleTouchRegisterSubmit(e) {
+  e.preventDefault();
+  const btn = document.getElementById("btnSubmitTouchRegister");
+  setButtonLoading(btn, true, "Registering...");
+
+  const selectedPatientId = document.getElementById("touchSelectUser")?.value;
+  const nameInput = document.getElementById("touchRegisterName")?.value;
+  const deviceId = latestTelemetry?.device_id || "esp32-01";
+
+  try {
+    if (selectedPatientId) {
+      // Bind existing user to active session
+      const res = await apiFetch('/api/sessions/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patient_id: selectedPatientId, device_id: deviceId })
+      });
+      if (res.ok) {
+        closeTouchRegisterModal();
+        fetchQueue();
+      } else {
+        alert("Failed to start session for selected user.");
+      }
+    } else if (nameInput) {
+      // Register new user dynamically
+      const res = await apiFetch('/api/users/register-touch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: nameInput, device_id: deviceId })
+      });
+      if (res.ok) {
+        closeTouchRegisterModal();
+        fetchQueue();
+      } else {
+        alert("Failed to register user.");
+      }
+    }
+  } catch (err) {
+    alert("Error registering user.");
+  } finally {
+    setButtonLoading(btn, false);
+  }
+}
+
+// User Profile & Historical Profiling Modal
+async function openUserProfileModal(patientId) {
+  try {
+    const res = await apiFetch(`/api/users/${patientId}/profile`);
+    if (!res.ok) {
+      alert("Failed to load user vitals profile.");
+      return;
+    }
+
+    const data = await res.json();
+    const p = data.patient;
+    const s = data.summary;
+    const series = data.series || [];
+
+    const fullName = `${p.patient_details?.first_name || ''} ${p.patient_details?.last_name || ''}`.trim() || p.patient_id;
+    document.getElementById("userProfileModalTitle").innerText = `Health Profile: ${fullName} (${p.patient_id})`;
+
+    const recentReadingsRows = series.slice(-15).reverse().map(r => `
+      <tr>
+        <td>${new Date(r.created_at).toLocaleTimeString()}</td>
+        <td>${r.temp_body_c ? r.temp_body_c.toFixed(1) + ' °C' : '--'}</td>
+        <td>${r.sbp && r.dbp ? r.sbp + ' / ' + r.dbp + ' mmHg' : '--'}</td>
+        <td>${r.bpm ? r.bpm + ' BPM' : '--'}</td>
+        <td>${r.spo2 ? r.spo2 + ' %' : '--'}</td>
+        <td>${r.latency_ms ? r.latency_ms.toFixed(1) + ' ms' : '--'}</td>
+      </tr>
+    `).join('');
+
+    document.getElementById("userProfileModalContent").innerHTML = `
+      <div class="profile-stats-grid">
+        <div class="profile-stat-card">
+          <div class="profile-stat-label">Avg Body Temp</div>
+          <div class="profile-stat-val">${s.avg_temp_c ? s.avg_temp_c + ' °C' : '--'}</div>
+        </div>
+        <div class="profile-stat-card">
+          <div class="profile-stat-label">Max Temp</div>
+          <div class="profile-stat-val">${s.max_temp_c ? s.max_temp_c + ' °C' : '--'}</div>
+        </div>
+        <div class="profile-stat-card">
+          <div class="profile-stat-label">Avg Blood Pressure</div>
+          <div class="profile-stat-val">${s.avg_sbp && s.avg_dbp ? s.avg_sbp + '/' + s.avg_dbp + ' mmHg' : '--'}</div>
+        </div>
+        <div class="profile-stat-card">
+          <div class="profile-stat-label">Avg Touch Latency</div>
+          <div class="profile-stat-val">${s.avg_latency_ms ? s.avg_latency_ms + ' ms' : '--'}</div>
+        </div>
+      </div>
+
+      <div style="font-weight:700; margin-bottom:0.75rem; color: var(--text-main);">
+        Recorded Vitals Log for Health Profiling (${s.total_readings} Total Telemetry Records)
+      </div>
+
+      <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Temperature</th>
+              <th>Est. Blood Pressure</th>
+              <th>Heart Rate</th>
+              <th>SpO₂</th>
+              <th>Latency</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recentReadingsRows || '<tr><td colspan="6" style="text-align:center;">No vitals recorded for this user yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    document.getElementById("userProfileModal").classList.add("active");
+  } catch (err) {
+    alert("Error fetching user profile.");
+  }
+}
+
+function closeUserProfileModal() {
+  const modal = document.getElementById("userProfileModal");
+  if (modal) modal.classList.remove("active");
+}
+
 
 function closeSummaryModal() {
   const modal = document.getElementById("summaryModal");

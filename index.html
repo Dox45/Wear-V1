@@ -58,11 +58,10 @@
         <span id="fingerStatusText">NO FINGER</span>
       </div>
 
-      <!-- Intake Form Trigger (Hidden unless authenticated) -->
-      <button class="btn-primary" id="navIntakeBtn" style="display: none;" onclick="openIntakeModal()">
-        New Patient Intake
+      <!-- Register User Trigger -->
+      <button class="btn-primary" id="navRegisterUserBtn" onclick="openTouchRegisterModal()">
+        Register / Select User
       </button>
-
       <!-- Simulation Test Trigger (Hidden unless authenticated) -->
       <button class="btn-secondary" id="navSimulateBtn" style="display: none;" onclick="triggerSimulation()">
         Simulate Data
@@ -213,6 +212,21 @@
         </div>
       </div>
 
+      <!-- Sensor-to-Display Latency KPI -->
+      <div class="glass-panel kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-label">Sensor Latency</span>
+        </div>
+        <div class="kpi-value-wrap">
+          <span class="kpi-value" id="kpiLatency">--</span>
+          <span class="kpi-unit">ms</span>
+        </div>
+        <div class="kpi-footer">
+          <span>Touch to Display</span>
+          <span class="kpi-status-badge badge-normal" id="kpiLatencyBadge">Realtime</span>
+        </div>
+      </div>
+
     </div>
 
     <!-- Main Dashboard Grid -->
@@ -250,29 +264,29 @@
 
       </div>
 
-      <!-- Right Column: Priority Triage Queue -->
+      <!-- Right Column: Registered Patients & Profiling Panel -->
       <div class="glass-panel" style="padding: 1.5rem; display: flex; flex-direction: column;">
         <div class="panel-header">
           <div class="panel-title">
-            Intelligent Triage Priority Queue
+            Registered Patients & Live Vitals Tracking
           </div>
-          <span class="esi-tag esi-1" id="queueCountBadge">0 Patients</span>
+          <span class="esi-tag esi-1" id="queueCountBadge">0 Users</span>
         </div>
 
         <div class="table-responsive" style="flex: 1;">
           <table class="triage-table">
             <thead>
               <tr>
-                <th>Patient</th>
-                <th>ESI Level</th>
-                <th>Acuity Score</th>
+                <th>User / Patient</th>
+                <th>Status</th>
+                <th>Live Device</th>
                 <th>Action</th>
               </tr>
             </thead>
             <tbody id="queueTableBody">
               <tr>
                 <td colspan="4" style="text-align: center; color: var(--text-dim); padding: 2rem;">
-                  No triaged patients in queue. Click "New Patient Intake" to add one.
+                  No registered users. Place finger on sensor to register a user.
                 </td>
               </tr>
             </tbody>
@@ -284,94 +298,54 @@
 
   </div>
 
-  <!-- Intake Form Modal -->
-  <div class="modal-overlay" id="intakeModal">
-    <div class="modal-card">
+  <!-- Touch-Triggered User Registration Modal -->
+  <div class="modal-overlay" id="touchRegisterModal">
+    <div class="modal-card" style="max-width: 480px;">
       <div class="modal-header">
-        <div class="modal-title">
-          New Patient Triage Intake
+        <div class="modal-title" style="color: var(--primary);">
+          Finger Contact Detected
         </div>
-        <button class="modal-close" onclick="closeIntakeModal()">&times;</button>
+        <button class="modal-close" onclick="closeTouchRegisterModal()">&times;</button>
       </div>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.2rem;">
+        Finger contact detected on the optical sensor. Enter user name to track vitals and log profiling data in real time.
+      </p>
 
-      <form id="intakeForm" onsubmit="handleIntakeSubmit(event)">
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">First Name *</label>
-            <input type="text" id="firstName" class="form-input" required placeholder="e.g. John">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Last Name *</label>
-            <input type="text" id="lastName" class="form-input" required placeholder="e.g. Doe">
-          </div>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Date of Birth / Age</label>
-            <input type="text" id="dob" class="form-input" placeholder="e.g. 1988-04-12 (38 yrs)">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Gender</label>
-            <select id="gender" class="form-select">
-              <option value="Male">Male</option>
-              <option value="Female">Female</option>
-              <option value="Other">Other</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Assign ESP32 IoT Device</label>
-            <select id="assignedDeviceId" class="form-select">
-              <option value="esp32-01">ESP32 Device #1 (esp32-01)</option>
-              <option value="esp32-02">ESP32 Device #2 (esp32-02)</option>
-              <option value="esp32-03">ESP32 Device #3 (esp32-03)</option>
-              <option value="">None (Unassigned)</option>
-            </select>
-          </div>
+      <form id="touchRegisterForm" onsubmit="handleTouchRegisterSubmit(event)">
+        <div class="form-group">
+          <label class="form-label">User / Patient Full Name *</label>
+          <input type="text" id="touchRegisterName" class="form-input" placeholder="e.g. Somtoo Okonkwo" autofocus required>
         </div>
 
         <div class="form-group">
-          <label class="form-label">Chief Complaint *</label>
-          <input type="text" id="chiefComplaint" class="form-input" required placeholder="e.g. Severe chest tightness and shortness of breath">
+          <label class="form-label">Or Select Existing Registered User</label>
+          <select id="touchSelectUser" class="form-select" onchange="onSelectExistingUser(this.value)">
+            <option value="">-- Create New Registered User --</option>
+          </select>
         </div>
 
-        <div class="form-group">
-          <label class="form-label">Pain Level Scale (0 - 10)</label>
-          <div class="pain-slider-container">
-            <input type="range" id="painLevel" min="0" max="10" value="5" class="form-input" style="flex: 1;" oninput="updatePainBadge(this.value)">
-            <div class="pain-value-badge" id="painBadge">5</div>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Presenting Symptoms (Check all that apply)</label>
-          <div class="checkbox-grid">
-            <label class="checkbox-chip"><input type="checkbox" name="symptom" value="Chest Pain"> Chest Pain</label>
-            <label class="checkbox-chip"><input type="checkbox" name="symptom" value="Shortness of Breath"> Shortness of Breath</label>
-            <label class="checkbox-chip"><input type="checkbox" name="symptom" value="High Fever"> High Fever</label>
-            <label class="checkbox-chip"><input type="checkbox" name="symptom" value="Dizziness"> Dizziness</label>
-            <label class="checkbox-chip"><input type="checkbox" name="symptom" value="Severe Bleeding"> Severe Bleeding</label>
-            <label class="checkbox-chip"><input type="checkbox" name="symptom" value="Altered Mental Status"> Altered Mental Status</label>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Medical History</label>
-          <div class="checkbox-grid">
-            <label class="checkbox-chip"><input type="checkbox" name="history" value="Hypertension"> Hypertension</label>
-            <label class="checkbox-chip"><input type="checkbox" name="history" value="Diabetes"> Diabetes</label>
-            <label class="checkbox-chip"><input type="checkbox" name="history" value="Heart Disease"> Heart Disease</label>
-            <label class="checkbox-chip"><input type="checkbox" name="history" value="COPD / Asthma"> COPD / Asthma</label>
-          </div>
-        </div>
-
-        <div style="display: flex; justify-content: flex-end; gap: 1rem; margin-top: 1.5rem;">
-          <button type="button" class="btn-secondary" onclick="closeIntakeModal()">Cancel</button>
-          <button type="submit" id="btnSubmitIntake" class="btn-primary">
-            Submit & Generate AI Triage
+        <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem;">
+          <button type="button" class="btn-secondary" onclick="closeTouchRegisterModal()">Dismiss</button>
+          <button type="submit" id="btnSubmitTouchRegister" class="btn-primary">
+            Start Live Tracking
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- User Vitals Profiling Modal -->
+  <div class="modal-overlay" id="userProfileModal">
+    <div class="modal-card" style="max-width: 850px;">
+      <div class="modal-header">
+        <div class="modal-title" id="userProfileModalTitle">
+          User Vitals Profiling & Historical Trends
+        </div>
+        <button class="modal-close" onclick="closeUserProfileModal()">&times;</button>
+      </div>
+      <div id="userProfileModalContent">
+        <!-- Rendered dynamically -->
+      </div>
     </div>
   </div>
 

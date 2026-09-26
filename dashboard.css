@@ -541,3 +541,76 @@ header {
   color: var(--text-main);
   letter-spacing: 0.03em;
 }
+
+/* Active Tracked User Highlight (Green Aesthetics) */
+.user-row-active {
+  background: rgba(16, 185, 129, 0.12) !important;
+  border-left: 4px solid #10b981 !important;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.25);
+  animation: greenGlowPulse 2s infinite alternate;
+}
+
+@keyframes greenGlowPulse {
+  0% { box-shadow: 0 0 6px rgba(16, 185, 129, 0.2); }
+  100% { box-shadow: 0 0 16px rgba(16, 185, 129, 0.45); }
+}
+
+.badge-active-green {
+  background: #10b981 !important;
+  color: #ffffff !important;
+  font-weight: 700;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badge-active-green::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ffffff;
+  animation: blinkDot 1s infinite alternate;
+}
+
+@keyframes blinkDot {
+  0% { opacity: 0.3; }
+  100% { opacity: 1.0; }
+}
+
+/* Profiling Modal Styles */
+.profile-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.profile-stat-card {
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  padding: 1rem;
+  border-radius: var(--radius-md);
+  text-align: center;
+}
+
+.profile-stat-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+}
+
+.profile-stat-val {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+

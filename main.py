@@ -47,6 +47,7 @@ from database import (
     get_all_active_sessions,
     get_patient_readings,
     get_latest_patient_reading,
+    get_patient_profile_data,
     clear_simulated_data,
     clear_all_demo_patients,
 )
@@ -92,6 +93,7 @@ latest_reading:   Optional[dict] = None
 calibrations:     Dict[str, dict] = {}
 patient_store:    Dict[str, dict] = {}  # patient_id -> patient record
 sse_subscribers:  List[asyncio.Queue] = []
+touch_onset_times: Dict[str, float] = {} # device_id -> onset timestamp in seconds
 
 
 # ─── Blood Pressure PTT Estimator ───────────────────────────────────────────
@@ -113,6 +115,11 @@ def estimate_bp(ptt_ms: float, cal: dict) -> tuple:
 
 
 # ─── Pydantic Data Models ───────────────────────────────────────────────────
+class UserRegisterRequest(BaseModel):
+    full_name: str = Field(..., min_length=1)
+    device_id: Optional[str] = Field("esp32-01", description="Assigned device ID")
+
+
 class Reading(BaseModel):
     device_id:        str
     timestamp_ms:     int
@@ -305,6 +312,18 @@ async def doctor_logout(request: Request):
 async def ingest_reading(reading: Reading):
     """IoT Telemetry Ingestion Endpoint called by ESP32/ESP8266."""
     global latest_reading
+    import time
+
+    dev_id = reading.device_id
+    now_sec = time.time()
+    latency_ms = None
+
+    if reading.finger_detected:
+        if dev_id not in touch_onset_times:
+            touch_onset_times[dev_id] = now_sec
+        latency_ms = round((now_sec - touch_onset_times[dev_id]) * 1000.0, 1)
+    else:
+        touch_onset_times.pop(dev_id, None)
 
     cal = calibrations.get(reading.device_id, DEFAULT_CAL)
     sbp, dbp = (None, None)
@@ -327,7 +346,7 @@ async def ingest_reading(reading: Reading):
 
     record.update({
         "server_time":     datetime.now(timezone.utc).isoformat(),
-        "temp_body_f":     round(reading.temp_body_c * 9.0 / 5.0 + 32.0, 2),
+        "temp_body_f":     round(reading.temp_body_c * 9.0 / 5.0 + 32.0, 2) if reading.temp_body_c else 0.0,
         "temp_die_f":      temp_die_f,
         "sbp":             sbp,
         "dbp":             dbp,
@@ -337,6 +356,7 @@ async def ingest_reading(reading: Reading):
         "device_connected": True,
         "patient_id":      patient_id,
         "session_id":      session_id,
+        "latency_ms":      latency_ms,
     })
 
     realtime_history.append(record)
@@ -353,7 +373,7 @@ async def ingest_reading(reading: Reading):
     # Broadcast to SSE clients asynchronously
     asyncio.create_task(broadcast_sse({"type": "telemetry", "data": record}))
 
-    return {"status": "ok", "sbp": sbp, "dbp": dbp, "bp_valid": bp_valid, "patient_id": patient_id, "session_id": session_id}
+    return {"status": "ok", "sbp": sbp, "dbp": dbp, "bp_valid": bp_valid, "patient_id": patient_id, "session_id": session_id, "latency_ms": latency_ms}
 
 
 @app.get("/readings/stream")
@@ -518,6 +538,75 @@ async def get_patient_vital_readings(patient_id: str, limit: int = 100):
     """Retrieves vital sign reading history for a specific patient."""
     readings = get_patient_readings(patient_id, limit=limit)
     return {"status": "success", "patient_id": patient_id, "count": len(readings), "readings": readings}
+
+
+@app.post("/api/users/register-touch")
+async def register_user_touch(req: UserRegisterRequest):
+    """
+    Registers a user dynamically upon touching the sensor.
+    Binds the user to an active monitoring session on the hardware device.
+    """
+    p_id = f"PAT-{uuid.uuid4().hex[:6].upper()}"
+    full_name_clean = req.full_name.strip()
+    names = full_name_clean.split(" ", 1)
+    first_name = names[0]
+    last_name = names[1] if len(names) > 1 else ""
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    patient_record = {
+        "patient_id": p_id,
+        "patient_details": {
+            "first_name": first_name,
+            "last_name": last_name,
+            "date_of_birth": "Unknown",
+            "gender": "Unknown"
+        },
+        "chief_complaint": "Touch Sensor Vitals Tracking",
+        "pain_level": 0,
+        "symptoms": [],
+        "symptom_duration": "Recent",
+        "medical_history": [],
+        "current_medications": [],
+        "allergies": [],
+        "vital_signs": {},
+        "acuity": {
+            "esi_level": 3,
+            "severity": "MODERATE",
+            "raw_score": 50,
+            "action": "Live Vitals Profiling",
+            "contributing_factors": []
+        },
+        "medical_summary": f"User profile created via touch sensor for {full_name_clean}.",
+        "status": "TRIAGED",
+        "doctor_notes": "",
+        "created_by_doctor": "TOUCH_REGISTER",
+        "device_id": req.device_id or "esp32-01",
+        "is_simulated": False,
+        "timestamp": now_iso
+    }
+
+    save_patient(patient_record)
+    patient_store[p_id] = patient_record
+    session = create_monitoring_session(p_id, req.device_id or "esp32-01")
+
+    asyncio.create_task(broadcast_sse({
+        "type": "triage_update",
+        "patient_id": p_id,
+        "action": "user_registered",
+        "device_id": req.device_id or "esp32-01"
+    }))
+
+    return {"status": "success", "patient_id": p_id, "session": session, "patient": patient_record}
+
+
+@app.get("/api/users/{patient_id}/profile")
+@app.get("/api/triage/patient/{patient_id}/profile")
+async def get_user_profile(patient_id: str):
+    """Retrieves temperature, blood pressure, and latency historical profiling data for a user."""
+    data = get_patient_profile_data(patient_id)
+    if data.get("status") == "error":
+        raise HTTPException(404, data.get("message", "User profile not found"))
+    return data
 
 
 

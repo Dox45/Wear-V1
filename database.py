@@ -158,6 +158,7 @@ def init_db() -> bool:
             "ALTER TABLE readings ADD COLUMN temp_die_c REAL",
             "ALTER TABLE readings ADD COLUMN temp_die_f REAL",
             "ALTER TABLE readings ADD COLUMN is_simulated INTEGER DEFAULT 0",
+            "ALTER TABLE readings ADD COLUMN latency_ms REAL",
         ]:
             try:
                 cursor.execute(migration)
@@ -582,7 +583,7 @@ def format_patient_row(r: sqlite3.Row) -> Dict[str, Any]:
 # ─── Sensor Readings Storage ──────────────────────────────────────────────────
 
 def save_reading(reading_data: Dict[str, Any]) -> bool:
-    """Logs raw telemetry reading into readings table with optional patient_id & session_id."""
+    """Logs raw telemetry reading into readings table with optional patient_id, session_id & latency_ms."""
     conn = get_db_connection()
     cursor = conn.cursor()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -590,8 +591,8 @@ def save_reading(reading_data: Dict[str, Any]) -> bool:
     try:
         cursor.execute("""
             INSERT INTO readings (
-                device_id, patient_id, session_id, timestamp_ms, bpm, spo2, temp_body_c, temp_body_f, temp_die_c, temp_die_f, sbp, dbp, ptt_ms, finger_detected, is_simulated, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                device_id, patient_id, session_id, timestamp_ms, bpm, spo2, temp_body_c, temp_body_f, temp_die_c, temp_die_f, sbp, dbp, ptt_ms, latency_ms, finger_detected, is_simulated, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             reading_data.get("device_id", "esp32-01"),
             reading_data.get("patient_id"),
@@ -606,6 +607,7 @@ def save_reading(reading_data: Dict[str, Any]) -> bool:
             reading_data.get("sbp"),
             reading_data.get("dbp"),
             reading_data.get("ptt_ms"),
+            reading_data.get("latency_ms"),
             1 if reading_data.get("finger_detected") else 0,
             1 if reading_data.get("is_simulated") else 0,
             now_iso
@@ -643,4 +645,41 @@ def get_latest_patient_reading(patient_id: str) -> Optional[Dict[str, Any]]:
     if row:
         return dict(row)
     return None
+
+
+def get_patient_profile_data(patient_id: str, limit: int = 300) -> Dict[str, Any]:
+    """
+    Fetches temperature, pressure (SBP/DBP), heart rate, SpO2, and latency telemetry history for profiling.
+    Computes statistical summaries for historical profiling analysis.
+    """
+    patient = get_patient_by_id(patient_id)
+    if not patient:
+        return {"status": "error", "message": "Patient not found"}
+
+    readings = get_patient_readings(patient_id, limit=limit)
+    # Reorder chronologically
+    chronological = list(reversed(readings))
+
+    temps = [r["temp_body_c"] for r in chronological if r.get("temp_body_c") is not None and r["temp_body_c"] > 0]
+    sbps  = [r["sbp"] for r in chronological if r.get("sbp") is not None]
+    dbps  = [r["dbp"] for r in chronological if r.get("dbp") is not None]
+    latencies = [r["latency_ms"] for r in chronological if r.get("latency_ms") is not None]
+
+    summary = {
+        "total_readings": len(readings),
+        "avg_temp_c": round(sum(temps) / len(temps), 2) if temps else None,
+        "max_temp_c": round(max(temps), 2) if temps else None,
+        "min_temp_c": round(min(temps), 2) if temps else None,
+        "avg_sbp": round(sum(sbps) / len(sbps), 1) if sbps else None,
+        "avg_dbp": round(sum(dbps) / len(dbps), 1) if dbps else None,
+        "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else None,
+    }
+
+    return {
+        "status": "success",
+        "patient": patient,
+        "summary": summary,
+        "series": chronological
+    }
+
 

@@ -82,6 +82,7 @@ TABLE_SCHEMAS = {
             sbp REAL,
             dbp REAL,
             ptt_ms REAL,
+            latency_ms REAL,
             finger_detected INTEGER DEFAULT 1,
             is_simulated INTEGER DEFAULT 0,
             created_at TEXT NOT NULL
@@ -118,6 +119,7 @@ COLUMN_MIGRATIONS = [
     ("readings", "temp_die_c", "REAL"),
     ("readings", "temp_die_f", "REAL"),
     ("readings", "is_simulated", "INTEGER DEFAULT 0"),
+    ("readings", "latency_ms", "REAL"),
 ]
 
 # Production Performance Indexes
