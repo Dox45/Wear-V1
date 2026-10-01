@@ -296,6 +296,23 @@
 
     </div>
 
+    <!-- Triage Severity Comparison (Cross-Patient Comparison Graph) -->
+    <div class="glass-panel" style="padding: 1.5rem; margin-top: 1.5rem;">
+      <div class="panel-header">
+        <div class="panel-title">
+          Triage Summary — Severity Comparison
+        </div>
+        <span class="esi-tag esi-1" id="comparisonCountBadge">0 Patients</span>
+      </div>
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.5rem 0 1rem 0;">
+        Who is more severe and should be attended to first — blending intake acuity (ESI) with live deviation of each user's latest vitals from clinical normal ranges.
+      </p>
+      <div style="height: 300px; position: relative;">
+        <canvas id="comparisonChart"></canvas>
+      </div>
+      <div style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-muted);" id="comparisonAttendFirst"></div>
+    </div>
+
   </div>
 
   <!-- Touch-Triggered User Registration Modal -->
@@ -307,21 +324,21 @@
         </div>
         <button class="modal-close" onclick="closeTouchRegisterModal()">&times;</button>
       </div>
-      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.2rem;">
-        Finger contact detected on the optical sensor. Enter user name to track vitals and log profiling data in real time.
+      <p id="touchModalStatus" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.2rem;">
+        Finger contact detected. Identify this person to start live vitals tracking — nobody is tracked without identification.
       </p>
 
       <form id="touchRegisterForm" onsubmit="handleTouchRegisterSubmit(event)">
         <div class="form-group">
-          <label class="form-label">User / Patient Full Name *</label>
-          <input type="text" id="touchRegisterName" class="form-input" placeholder="e.g. Somtoo Okonkwo" autofocus required>
+          <label class="form-label">Option A — Select an Already Registered User</label>
+          <select id="touchSelectUser" class="form-select" onchange="onSelectExistingUser(this.value)">
+            <option value="">-- Or create a new user below --</option>
+          </select>
         </div>
 
-        <div class="form-group">
-          <label class="form-label">Or Select Existing Registered User</label>
-          <select id="touchSelectUser" class="form-select" onchange="onSelectExistingUser(this.value)">
-            <option value="">-- Create New Registered User --</option>
-          </select>
+        <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 1rem;">
+          <label class="form-label">Option B — Enter New User Details</label>
+          <input type="text" id="touchRegisterName" class="form-input" placeholder="Full name, e.g. Somtoo Okonkwo" autocomplete="off">
         </div>
 
         <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem;">

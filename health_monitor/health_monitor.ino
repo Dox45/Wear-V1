@@ -38,11 +38,13 @@
   SpO2 acquisition fix retained unchanged below.)
 */
 
-#define WIFI_SSID      "TECNO CAMON 40 Pro"
-#define WIFI_PASSWORD  "hamsphone3"
+// #define WIFI_SSID      "TECNO CAMON 40 Pro"
+// #define WIFI_PASSWORD  "hamsphone3"
 
 // #define WIFI_SSID      "mayberry"
 // #define WIFI_PASSWORD  "pass123now2"
+#define WIFI_SSID   "SRS2"
+#define WIFI_PASSWORD  "SRS$9#vK"
 
 #define API_HOST       "medical-triage-v2.onrender.com"   // Host domain without protocol (e.g. domain.ngrok-free.dev or IP:port)
 #define API_ENDPOINT   "/readings"

@@ -49,10 +49,19 @@ function setButtonLoading(btn, isLoading, loadingText = "Processing...") {
 // Global Application State
 let latestTelemetry = null;
 let historyChart = null;
+let comparisonChart = null;
 let ppgCanvas, ppgCtx;
 let animationFrameId = null;
 let wavePhase = 0;
-let hasPromptedTouchRegister = false;
+// ─── Identity / Touch-Registration State ───────────────────────────────────
+// Flow: finger on sensor -> modal pops up automatically -> the operator either
+// picks an already registered user or enters new user details -> only then is
+// the current person tracked. Nobody is auto-tracked for having used the
+// device before; lifting the finger ends tracking.
+let hasPromptedTouchRegister = false; // one popup per contact episode
+let touchModalOpen = false;           // modal currently on screen
+let pendingIdentityDeviceId = null;   // device with unresolved identity request
+let touchEpisodeActive = false;       // finger still physically down
 
 // Global Simulation State
 let currentSimState = {
@@ -65,15 +74,18 @@ let currentSimState = {
 document.addEventListener("DOMContentLoaded", () => {
   initPPGCanvas();
   initChart();
+  initComparisonChart();
   initSSE();
   checkDoctorSession();
   fetchQueue();
   pollTelemetry();
   fetchSimulationState();
+  fetchComparison();
 
   // Periodic timers for real-time live updates
   setInterval(pollTelemetry, 1000); // Poll vitals telemetry every 1s
   setInterval(fetchQueue, 3000);     // Poll triage queue every 3s
+  setInterval(fetchComparison, 5000); // Refresh severity comparison every 5s
 });
 
 // PPG Waveform Renderer (60 FPS Canvas)
@@ -193,6 +205,102 @@ function initChart() {
   });
 }
 
+// ─── Triage Summary: Cross-Patient Severity Comparison Graph ────────────────
+const SEVERITY_COLORS = {
+  1: '#ef4444', // CRITICAL
+  2: '#f97316', // SEVERE
+  3: '#eab308', // MODERATE
+  4: '#3b82f6', // LOW
+  5: '#10b981'  // MINIMAL
+};
+
+function initComparisonChart() {
+  const chartEl = document.getElementById("comparisonChart");
+  if (!chartEl) return;
+  const ctx = chartEl.getContext("2d");
+  comparisonChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Severity Score (0–100)',
+          data: [],
+          backgroundColor: [],
+          borderRadius: 6,
+          borderWidth: 1
+        },
+        {
+          label: 'Intake Acuity Score',
+          data: [],
+          backgroundColor: 'rgba(148, 163, 184, 0.35)',
+          borderRadius: 6,
+          borderWidth: 1
+        }
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#000000', font: { family: 'Inter', weight: '600' } } },
+        tooltip: {
+          callbacks: {
+            afterBody: (items) => {
+              const c = window._comparisonData?.[items[0].dataIndex];
+              if (!c) return '';
+              const lines = [`ESI Level ${c.esi_level} — ${c.severity}`, `Status: ${c.status}`];
+              if (c.deviation_flags?.length) lines.push('Flags: ' + c.deviation_flags.join(', '));
+              return lines;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { min: 0, max: 100, ticks: { color: '#64748b' }, grid: { color: 'rgba(0,0,0,0.06)' } },
+        y: { ticks: { color: '#000000', font: { weight: '600' } }, grid: { color: 'rgba(0,0,0,0.06)' } }
+      }
+    }
+  });
+}
+
+async function fetchComparison() {
+  try {
+    const res = await apiFetch('/api/triage/comparison');
+    if (!res.ok) return;
+    const data = await res.json();
+    renderComparison(data.comparison || []);
+  } catch (e) { /* non-fatal */ }
+}
+
+function renderComparison(comparison) {
+  window._comparisonData = comparison;
+
+  const countBadge = document.getElementById("comparisonCountBadge");
+  if (countBadge) countBadge.innerText = `${comparison.length} Patients`;
+
+  if (!comparisonChart) return;
+
+  comparisonChart.data.labels = comparison.map(c => c.full_name || c.patient_id);
+  comparisonChart.data.datasets[0].data = comparison.map(c => c.severity_score);
+  comparisonChart.data.datasets[0].backgroundColor = comparison.map(c => SEVERITY_COLORS[c.esi_level] || '#64748b');
+  comparisonChart.data.datasets[1].data = comparison.map(c => c.intake_score);
+  comparisonChart.update('none');
+
+  const attendEl = document.getElementById("comparisonAttendFirst");
+  if (attendEl) {
+    if (comparison.length === 0) {
+      attendEl.innerHTML = "No registered users to compare yet. Identify users via the finger-detection modal to build profiles.";
+    } else {
+      const top = comparison[0];
+      attendEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> <strong>Attend to first:</strong> ${top.full_name || top.patient_id} 
+        (ESI Level ${top.esi_level} — ${top.severity}, severity score ${top.severity_score})
+        ${top.deviation_flags?.length ? ` — ${top.deviation_flags.join(', ')}` : ''}.`;
+    }
+  }
+}
+
 // Connect to Server-Sent Events (SSE) stream
 function initSSE() {
   try {
@@ -203,6 +311,8 @@ function initSSE() {
         const msg = JSON.parse(event.data);
         if (msg.type === 'telemetry') {
           updateTelemetryUI(msg.data);
+        } else if (msg.type === 'touch_detected') {
+          handleTouchDetectedEvent(msg);
         } else if (msg.type === 'triage_update') {
           fetchQueue();
         } else if (msg.type === 'simulation_state') {
@@ -234,19 +344,73 @@ async function pollTelemetry() {
   }
 }
 
+// ─── Finger-Detection → Identity Modal Flow ───────────────────────────────
+// The moment skin contact is detected (and no identity has been established
+// for this contact episode), notify the backend and pop up the modal. The
+// modal stays until the operator identifies the person — dismissing it does
+// NOT start tracking, it explicitly ends the identity request.
+function handleFingerDetection(data) {
+  const deviceId = data.device_id || "esp32-01";
+
+  if (data.finger_detected) {
+    // New physical contact episode begins (finger was off, now it's on).
+    if (!touchEpisodeActive) {
+      touchEpisodeActive = true;
+      hasPromptedTouchRegister = false;
+    }
+
+    const identityActive = data.identity_requested || !!data.patient_id;
+
+    if (!identityActive && !hasPromptedTouchRegister) {
+      hasPromptedTouchRegister = true;
+      pendingIdentityDeviceId = deviceId;
+      openTouchRegisterModal(deviceId);
+
+      // Tell the backend to open the identity request window so telemetry
+      // only becomes attributable once the operator identifies someone.
+      apiFetch('/api/touch/detected', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: deviceId })
+      }).catch(() => {});
+    }
+  } else {
+    // Finger lifted — end the episode. Tracking stops for that person and
+    // the next touch will pop the modal again.
+    if (touchEpisodeActive) {
+      touchEpisodeActive = false;
+      hasPromptedTouchRegister = false;
+      endIdentityRequest(deviceId);
+    }
+  }
+}
+
+async function endIdentityRequest(deviceId) {
+  try {
+    await apiFetch('/api/identity/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId })
+    });
+  } catch (e) { /* non-fatal */ }
+}
+
+function handleTouchDetectedEvent(msg) {
+  // SSE event from another open dashboard tab also saw the touch — keep
+  // this tab's modal in sync.
+  if (!hasPromptedTouchRegister && !latestTelemetry?.patient_id) {
+    hasPromptedTouchRegister = true;
+    pendingIdentityDeviceId = msg.device_id || "esp32-01";
+    touchEpisodeActive = true;
+    openTouchRegisterModal(pendingIdentityDeviceId);
+  }
+}
+
 // Update Telemetry UI Cards & Badges
 function updateTelemetryUI(data) {
   latestTelemetry = data;
 
-  // Touch trigger prompt for registration if finger detected and no active user session bound
-  if (data.finger_detected && !data.patient_id) {
-    if (!hasPromptedTouchRegister) {
-      hasPromptedTouchRegister = true;
-      openTouchRegisterModal(data.device_id || "esp32-01");
-    }
-  } else if (!data.finger_detected) {
-    hasPromptedTouchRegister = false;
-  }
+  handleFingerDetection(data);
 
   // Update Device Connection Status
   const devBadge = document.getElementById("deviceStatusBadge");
@@ -319,6 +483,16 @@ function updateTelemetryUI(data) {
 
   // Re-render registered queue to keep green active highlight up to date
   fetchQueue();
+
+  // Keep the modal's hint text in sync with the live finger state
+  if (touchModalOpen) {
+    const statusEl = document.getElementById("touchModalStatus");
+    if (statusEl) {
+      statusEl.innerText = data.finger_detected
+        ? "Finger still on sensor. Identify this person to start live vitals tracking — nobody is tracked without identification."
+        : "Finger lifted. Tracking ended — place the finger back to identify a user.";
+    }
+  }
 
   // Append to 10-Minute Vitals Chart
   if ((data.bpm > 0 || data.temp_body_c > 0) && historyChart) {
@@ -516,13 +690,16 @@ function renderQueue(queue) {
   }).join('');
 }
 
-// Touch Registration Modal Handlers
-function openTouchRegisterModal(deviceId = "esp32-01") {
+// ─── Touch Registration Modal Handlers ──────────────────────────────────
+function openTouchRegisterModal(deviceId = "esp32-01", options = {}) {
   const modal = document.getElementById("touchRegisterModal");
   const select = document.getElementById("touchSelectUser");
 
+  pendingIdentityDeviceId = deviceId;
+  touchModalOpen = true;
+
   if (select) {
-    select.innerHTML = '<option value="">-- Create New Registered User --</option>' +
+    select.innerHTML = '<option value="">-- Or create a new user below --</option>' +
       allRegisteredPatients.map(p => {
         const name = `${p.patient_details?.first_name || ''} ${p.patient_details?.last_name || ''}`.trim() || p.patient_id;
         return `<option value="${p.patient_id}">${name} (${p.patient_id})</option>`;
@@ -532,8 +709,14 @@ function openTouchRegisterModal(deviceId = "esp32-01") {
   const inputName = document.getElementById("touchRegisterName");
   if (inputName) {
     inputName.value = "";
-    inputName.required = true;
     inputName.disabled = false;
+  }
+
+  const statusEl = document.getElementById("touchModalStatus");
+  if (statusEl) {
+    statusEl.innerText = options.message ||
+      "Finger contact detected. Identify this person to start live vitals tracking — nobody is tracked without identification.";
+    statusEl.style.color = options.isError ? "var(--crimson, #f87171)" : "";
   }
 
   if (modal) modal.classList.add("active");
@@ -542,61 +725,84 @@ function openTouchRegisterModal(deviceId = "esp32-01") {
 function closeTouchRegisterModal() {
   const modal = document.getElementById("touchRegisterModal");
   if (modal) modal.classList.remove("active");
+  touchModalOpen = false;
+
+  // Dismissing the modal means the current person is NOT identified. End the
+  // identity request so no vitals are attributed to anyone.
+  const deviceId = pendingIdentityDeviceId || latestTelemetry?.device_id || "esp32-01";
+  pendingIdentityDeviceId = null;
+  endIdentityRequest(deviceId);
 }
 
 function onSelectExistingUser(patientId) {
   const inputName = document.getElementById("touchRegisterName");
-  if (patientId) {
-    inputName.required = false;
-    inputName.disabled = true;
-  } else {
-    inputName.required = true;
-    inputName.disabled = false;
+  if (inputName) {
+    if (patientId) {
+      inputName.value = "";
+      inputName.placeholder = "Disabled — using selected registered user";
+    } else {
+      inputName.placeholder = "Full name, e.g. Somtoo Okonkwo";
+    }
   }
 }
 
 async function handleTouchRegisterSubmit(e) {
   e.preventDefault();
   const btn = document.getElementById("btnSubmitTouchRegister");
-  setButtonLoading(btn, true, "Registering...");
+  setButtonLoading(btn, true, "Linking...");
 
   const selectedPatientId = document.getElementById("touchSelectUser")?.value;
-  const nameInput = document.getElementById("touchRegisterName")?.value;
-  const deviceId = latestTelemetry?.device_id || "esp32-01";
+  const nameInput = document.getElementById("touchRegisterName")?.value.trim();
+  const deviceId = pendingIdentityDeviceId || latestTelemetry?.device_id || "esp32-01";
 
   try {
+    let res;
     if (selectedPatientId) {
-      // Bind existing user to active session
-      const res = await apiFetch('/api/sessions/start', {
+      // Continue tracking an already registered user (public endpoint —
+      // no doctor login required for bedside identification)
+      res = await apiFetch('/api/users/register-touch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ patient_id: selectedPatientId, device_id: deviceId })
+        body: JSON.stringify({ existing_patient_id: selectedPatientId, device_id: deviceId })
       });
-      if (res.ok) {
-        closeTouchRegisterModal();
-        fetchQueue();
-      } else {
-        alert("Failed to start session for selected user.");
-      }
     } else if (nameInput) {
-      // Register new user dynamically
-      const res = await apiFetch('/api/users/register-touch', {
+      // Register and track a brand new user
+      res = await apiFetch('/api/users/register-touch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ full_name: nameInput, device_id: deviceId })
       });
-      if (res.ok) {
-        closeTouchRegisterModal();
-        fetchQueue();
-      } else {
-        alert("Failed to register user.");
+    } else {
+      alert("Either select an already registered user or enter a new user's full name.");
+      return;
+    }
+
+    if (res.ok) {
+      const result = await res.json();
+      if (result.status === "ignored") {
+        // Identity request expired (finger lifted and cleared) — reopen.
+        openTouchRegisterModal(deviceId, { message: "Identity request expired — finger was lifted. Confirm again while the finger is on the sensor.", isError: true });
+        return;
       }
+      touchModalOpen = false;
+      pendingIdentityDeviceId = null;
+      closeTouchRegisterModalOnly();
+      fetchQueue();
+    } else {
+      alert("Failed to identify user. Please try again.");
     }
   } catch (err) {
-    alert("Error registering user.");
+    alert("Error identifying user.");
   } finally {
     setButtonLoading(btn, false);
   }
+}
+
+// Closes the modal without side effects (identity already established).
+function closeTouchRegisterModalOnly() {
+  const modal = document.getElementById("touchRegisterModal");
+  if (modal) modal.classList.remove("active");
+  touchModalOpen = false;
 }
 
 // User Profile & Historical Profiling Modal

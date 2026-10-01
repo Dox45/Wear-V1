@@ -95,6 +95,14 @@ patient_store:    Dict[str, dict] = {}  # patient_id -> patient record
 sse_subscribers:  List[asyncio.Queue] = []
 touch_onset_times: Dict[str, float] = {} # device_id -> onset timestamp in seconds
 
+# ─── Identity Gating ─────────────────────────────────────────────────────────
+# A device only attributes telemetry to a patient (and logs touch latency)
+# once the dashboard has identified the user for that device via the
+# finger-detection modal. Before that, raw vitals stream to the live UI but
+# are NOT persisted under any patient — nobody is silently auto-tracked just
+# because their finger has been on the sensor before.
+identity_requested_devices: set = set()  # device_ids with an open identification request
+
 
 # ─── Blood Pressure PTT Estimator ───────────────────────────────────────────
 def estimate_bp(ptt_ms: float, cal: dict) -> tuple:
@@ -116,8 +124,18 @@ def estimate_bp(ptt_ms: float, cal: dict) -> tuple:
 
 # ─── Pydantic Data Models ───────────────────────────────────────────────────
 class UserRegisterRequest(BaseModel):
-    full_name: str = Field(..., min_length=1)
+    full_name: Optional[str] = Field(None, min_length=1)
+    existing_patient_id: Optional[str] = Field(None, description="Continue tracking an already registered user")
     device_id: Optional[str] = Field("esp32-01", description="Assigned device ID")
+
+
+class TouchDetectRequest(BaseModel):
+    device_id: str = Field("esp32-01", description="Device whose finger sensor detected contact")
+
+
+class IdentityClearRequest(BaseModel):
+    device_id: Optional[str] = None
+    patient_id: Optional[str] = None
 
 
 class Reading(BaseModel):
@@ -325,6 +343,39 @@ async def ingest_reading(reading: Reading):
     else:
         touch_onset_times.pop(dev_id, None)
 
+    # ─── Identity Gate ─────────────────────────────────────────────────────────
+    # Vitals are only attributed to a patient while the dashboard has an open
+    # identification request for this device. If the identified person lifts
+    # their finger (or the request was cleared), close the session immediately
+    # so the next finger-on event triggers the modal again. The gate also
+    # self-heals: a dangling request left by a closed browser tab is dropped
+    # as soon as the finger comes off, so the next finger-on always starts a
+    # fresh identification — nobody is ever silently re-tracked.
+    if dev_id not in identity_requested_devices:
+        stale_session = get_active_session_by_device(dev_id)
+        if stale_session:
+            close_monitoring_session_by_device(dev_id)
+            asyncio.create_task(broadcast_sse({
+                "type": "triage_update",
+                "action": "session_stopped",
+                "device_id": dev_id,
+                "reason": "identity_not_requested"
+            }))
+    elif not reading.finger_detected:
+        # Finger physically off the sensor -> the episode is over, even if the
+        # dashboard that opened the request is gone (tab closed/crashed).
+        # Drop the request AND close the session so the next finger-on always
+        # requires fresh identification — nobody is ever silently re-tracked.
+        identity_requested_devices.discard(dev_id)
+        if get_active_session_by_device(dev_id):
+            close_monitoring_session_by_device(dev_id)
+            asyncio.create_task(broadcast_sse({
+                "type": "triage_update",
+                "action": "session_stopped",
+                "device_id": dev_id,
+                "reason": "finger_removed"
+            }))
+
     cal = calibrations.get(reading.device_id, DEFAULT_CAL)
     sbp, dbp = (None, None)
     bp_valid = False
@@ -333,12 +384,23 @@ async def ingest_reading(reading: Reading):
         sbp, dbp = estimate_bp(reading.ptt_ms, cal)
         bp_valid = sbp is not None
 
+    # Touch-to-display latency only counts once the person is being tracked
+    # (identity requested), otherwise anonymous touches pollute the metric.
+    if dev_id not in identity_requested_devices:
+        latency_ms = None
+
     record = reading.model_dump()
 
-    # Look up active monitoring session linking device_id to a registered patient
-    active_session = get_active_session_by_device(reading.device_id)
-    patient_id = active_session["patient_id"] if active_session else None
-    session_id = active_session["session_id"] if active_session else None
+    # Session bookkeeping reflects the gate decision above: a session that
+    # was just force-closed (or a device with no identity request) attaches
+    # to nobody.
+    if dev_id in identity_requested_devices:
+        active_session = get_active_session_by_device(dev_id)
+        patient_id = active_session["patient_id"] if active_session else None
+        session_id = active_session["session_id"] if active_session else None
+    else:
+        patient_id = None
+        session_id = None
 
     temp_die_f = reading.temp_die_f
     if reading.temp_die_c is not None and temp_die_f is None:
@@ -354,9 +416,10 @@ async def ingest_reading(reading: Reading):
         "map":             round((sbp + 2 * dbp) / 3, 1) if bp_valid else None,
         "pulse_pressure":  round(sbp - dbp, 1) if bp_valid else None,
         "device_connected": True,
-        "patient_id":      patient_id,
-        "session_id":      session_id,
+        "patient_id":      patient_id if dev_id in identity_requested_devices else None,
+        "session_id":      session_id if dev_id in identity_requested_devices else None,
         "latency_ms":      latency_ms,
+        "identity_requested": dev_id in identity_requested_devices,
     })
 
     realtime_history.append(record)
@@ -506,6 +569,49 @@ async def start_monitoring_session(req: SessionStartRequest, request: Request):
     return {"status": "success", "session": session}
 
 
+@app.post("/api/touch/detected")
+async def touch_detected(req: TouchDetectRequest):
+    """
+    Fired by the dashboard the moment the finger sensor detects skin contact.
+    Marks the device as awaiting identification and notifies the UI to bring
+    up the identity modal (new user details or pick a registered user).
+    """
+    identity_requested_devices.add(req.device_id)
+
+    await broadcast_sse({
+        "type": "touch_detected",
+        "device_id": req.device_id,
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {"status": "success", "device_id": req.device_id, "awaiting_identity": True}
+
+
+@app.post("/api/identity/clear")
+async def clear_identity_request(req: IdentityClearRequest):
+    """
+    Ends tracking: the identified person lifted their finger or monitoring
+    was explicitly stopped. Clears the identity request and closes any active
+    session for the device/patient so no further readings are attributed.
+    """
+    if req.device_id:
+        identity_requested_devices.discard(req.device_id)
+    closed = False
+    if req.patient_id:
+        closed = close_monitoring_session_by_patient(req.patient_id)
+    elif req.device_id:
+        closed = close_monitoring_session_by_device(req.device_id)
+
+    await broadcast_sse({
+        "type": "identity_cleared",
+        "device_id": req.device_id,
+        "patient_id": req.patient_id,
+    })
+    await broadcast_sse({"type": "triage_update", "action": "identity_cleared"})
+
+    return {"status": "success", "session_closed": closed}
+
+
 @app.post("/api/sessions/stop")
 async def stop_monitoring_session(req: SessionStopRequest, request: Request):
     """Closes active monitoring session for a patient or device (Doctor Auth Required)."""
@@ -517,6 +623,9 @@ async def stop_monitoring_session(req: SessionStopRequest, request: Request):
         closed = close_monitoring_session_by_device(req.device_id)
     else:
         raise HTTPException(400, "Must provide patient_id or device_id to stop session.")
+
+    if req.device_id:
+        identity_requested_devices.discard(req.device_id)
 
     asyncio.create_task(broadcast_sse({
         "type": "triage_update",
@@ -543,9 +652,43 @@ async def get_patient_vital_readings(patient_id: str, limit: int = 100):
 @app.post("/api/users/register-touch")
 async def register_user_touch(req: UserRegisterRequest):
     """
-    Registers a user dynamically upon touching the sensor.
+    Registers a user dynamically upon touching the sensor, or resumes
+    tracking an already registered user for the current touch episode.
     Binds the user to an active monitoring session on the hardware device.
     """
+    dev = req.device_id or "esp32-01"
+
+    # Only track if identification is pending for this device. This is what
+    # stops the device from silently tracking anyone who has simply used it
+    # before — an identity request must be open (modal shown on touch).
+    if dev not in identity_requested_devices:
+        return {"status": "ignored", "reason": "no_identity_request", "patient_id": None}
+
+    # ── Branch: continue tracking an already registered user ─────────────
+    if req.existing_patient_id:
+        existing = get_patient_by_id(req.existing_patient_id)
+        if not existing:
+            raise HTTPException(404, f"Patient {req.existing_patient_id} not found.")
+
+        session = create_monitoring_session(req.existing_patient_id, dev)
+
+        asyncio.create_task(broadcast_sse({
+            "type": "triage_update",
+            "patient_id": req.existing_patient_id,
+            "action": "user_reidentified",
+            "device_id": dev
+        }))
+
+        return {
+            "status": "success",
+            "patient_id": req.existing_patient_id,
+            "session": session,
+            "patient": existing,
+        }
+
+    if not req.full_name or not req.full_name.strip():
+        raise HTTPException(400, "Provide full_name for a new user or existing_patient_id to continue tracking.")
+
     p_id = f"PAT-{uuid.uuid4().hex[:6].upper()}"
     full_name_clean = req.full_name.strip()
     names = full_name_clean.split(" ", 1)
@@ -587,13 +730,13 @@ async def register_user_touch(req: UserRegisterRequest):
 
     save_patient(patient_record)
     patient_store[p_id] = patient_record
-    session = create_monitoring_session(p_id, req.device_id or "esp32-01")
+    session = create_monitoring_session(p_id, dev)
 
     asyncio.create_task(broadcast_sse({
         "type": "triage_update",
         "patient_id": p_id,
         "action": "user_registered",
-        "device_id": req.device_id or "esp32-01"
+        "device_id": dev
     }))
 
     return {"status": "success", "patient_id": p_id, "session": session, "patient": patient_record}
@@ -615,6 +758,118 @@ async def get_triage_queue():
     """Returns all triaged patients from SQLite database sorted by Acuity (ESI 1 to 5)."""
     queue = get_all_patients()
     return {"status": "success", "count": len(queue), "queue": queue}
+
+
+ESI_SEVERITY_NAMES = {1: "CRITICAL", 2: "SEVERE", 3: "MODERATE", 4: "LOW", 5: "MINIMAL"}
+
+
+@app.get("/api/triage/comparison")
+async def get_triage_comparison():
+    """
+    Triage Summary Comparison — cross-patient severity comparison for deciding
+    who to attend to first. Blends each patient's intake acuity with live
+    deviations of their latest recorded vitals from clinical normal ranges.
+    """
+    queue = get_all_patients()
+    comparisons = []
+    for p in queue:
+        latest = get_latest_patient_reading(p["patient_id"])
+        acuity = p.get("acuity") or {}
+        intake_score = acuity.get("raw_score") or 0
+        esi = acuity.get("esi_level") or 5
+
+        dev_pts = 0.0
+        deviation_flags = []
+        if latest:
+            bpm = latest.get("bpm") or 0
+            spo2 = latest.get("spo2") or 0
+            temp = latest.get("temp_body_c") or 0
+            sbp = latest.get("sbp")
+            dbp = latest.get("dbp")
+
+            if bpm > 0:
+                if bpm > 120:
+                    dev_pts += min(25, (bpm - 120) * 0.5)
+                    deviation_flags.append(f"Tachycardia ({bpm} BPM)")
+                elif bpm < 50:
+                    dev_pts += min(25, (50 - bpm) * 0.5)
+                    deviation_flags.append(f"Bradycardia ({bpm} BPM)")
+
+            if 0 < spo2 < 95:
+                dev_pts += min(30, (95 - spo2) * 3.0)
+                deviation_flags.append(f"Low SpO₂ ({spo2}%)")
+
+            if temp > 0:
+                if temp >= 38.0:
+                    dev_pts += min(25, (temp - 38.0) * 12.0)
+                    deviation_flags.append(f"Fever ({temp}°C)")
+                elif temp < 35.5:
+                    dev_pts += min(25, (35.5 - temp) * 12.0)
+                    deviation_flags.append(f"Hypothermia ({temp}°C)")
+
+            if sbp and (sbp > 160 or sbp < 90):
+                dev_pts += 15
+                deviation_flags.append(f"Abnormal Systolic BP ({sbp} mmHg)")
+            if dbp and (dbp > 105 or dbp < 55):
+                dev_pts += 10
+                deviation_flags.append(f"Abnormal Diastolic BP ({dbp} mmHg)")
+
+            # Re-run the acuity engine on the LIVE vitals so critical real-time
+            # deviations (e.g. SpO2 < 90%) escalate the ESI via its safety
+            # overrides — a touch-registered user with a stale default ESI 3
+            # must not mask a current crisis.
+            live_acuity = compute_acuity({
+                "latest_vitals": {
+                    "bpm": bpm or None,
+                    "spo2": spo2 or None,
+                    "temperature": temp or None,
+                    "sbp": sbp,
+                    "dbp": dbp,
+                },
+                "pain_level": p.get("pain_level", 0),
+                "symptoms": p.get("symptoms", []),
+                "medical_history": p.get("medical_history", []),
+            })
+            live_score = live_acuity.get("raw_score") or 0
+            live_esi = live_acuity.get("esi_level") or 5
+            for f in live_acuity.get("contributing_factors", []):
+                if f not in deviation_flags:
+                    deviation_flags.append(f)
+        else:
+            live_score = 0
+            live_esi = 5
+
+        # Most severe assessment wins (lower ESI level = more severe).
+        esi = min(esi, live_esi)
+        severity_score = round(min(100, max(intake_score, live_score, intake_score + dev_pts)), 1)
+        comparisons.append({
+            "patient_id": p["patient_id"],
+            "full_name": f"{p['patient_details']['first_name']} {p['patient_details']['last_name']}",
+            "esi_level": esi,
+            "severity": ESI_SEVERITY_NAMES.get(esi, "MINIMAL"),
+            "intake_score": intake_score,
+            "severity_score": severity_score,
+            "deviation_flags": deviation_flags,
+            "status": p.get("status") or "TRIAGED",
+            "device_id": p.get("device_id"),
+            "latest_vitals": {
+                "bpm": latest.get("bpm") if latest else None,
+                "spo2": latest.get("spo2") if latest else None,
+                "temp_body_c": latest.get("temp_body_c") if latest else None,
+                "sbp": latest.get("sbp") if latest else None,
+                "dbp": latest.get("dbp") if latest else None,
+            },
+            "reading_count": len(get_patient_readings(p["patient_id"], limit=1000)),
+        })
+
+    comparisons.sort(key=lambda c: (c["esi_level"], -c["severity_score"]))
+
+    return {
+        "status": "success",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(comparisons),
+        "comparison": comparisons,
+    }
 
 
 @app.get("/api/triage/patient/{patient_id}")
