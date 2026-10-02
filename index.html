@@ -266,21 +266,28 @@
 
       <!-- Right Column: Registered Patients & Profiling Panel -->
       <div class="glass-panel" style="padding: 1.5rem; display: flex; flex-direction: column;">
-        <div class="panel-header">
-          <div class="panel-title">
+        <div class="panel-header" style="flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem;">
+          <div class="panel-title" style="display: flex; align-items: center; gap: 0.5rem;">
+            <i class="fa-solid fa-users" style="color: var(--primary);"></i>
             Registered Patients & Live Vitals Tracking
           </div>
           <span class="esi-tag esi-1" id="queueCountBadge">0 Users</span>
         </div>
 
-        <div class="table-responsive" style="flex: 1;">
-          <table class="triage-table">
-            <thead>
+        <!-- In-Panel Quick Search Input -->
+        <div style="margin-bottom: 0.75rem;">
+          <input type="text" id="patientQueueSearch" class="form-input" placeholder="Search patients by name or ID..." style="font-size: 0.82rem; padding: 0.45rem 0.75rem;" oninput="filterPatientQueueTable()">
+        </div>
+
+        <!-- Fixed Window Height Scrollable Container -->
+        <div class="table-responsive" style="max-height: 480px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-md); position: relative;">
+          <table class="triage-table" style="width: 100%; border-collapse: collapse;">
+            <thead style="position: sticky; top: 0; background: var(--surface); z-index: 10; border-bottom: 2px solid var(--border);">
               <tr>
                 <th>User / Patient</th>
                 <th>Status</th>
                 <th>Live Device</th>
-                <th>Action</th>
+                <th style="text-align: right;">Action</th>
               </tr>
             </thead>
             <tbody id="queueTableBody">

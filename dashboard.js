@@ -787,16 +787,33 @@ async function fetchQueue() {
   } catch (e) { }
 }
 
+function filterPatientQueueTable() {
+  renderQueue(allRegisteredPatients);
+}
+
 function renderQueue(queue) {
   allRegisteredPatients = queue;
   const tbody = document.getElementById("queueTableBody");
   const countBadge = document.getElementById("queueCountBadge");
-  if (countBadge) countBadge.innerText = `${queue.length} Users`;
 
   if (!tbody) return;
 
-  if (queue.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-dim); padding: 2rem;">No registered users. Place finger on sensor to register a user.</td></tr>`;
+  const searchVal = (document.getElementById("patientQueueSearch")?.value || "").toLowerCase().trim();
+
+  let displayQueue = queue;
+  if (searchVal) {
+    displayQueue = queue.filter(p => {
+      const text = `${p.patient_details?.first_name || ''} ${p.patient_details?.last_name || ''} ${p.patient_id} ${p.device_id || ''}`.toLowerCase();
+      return text.includes(searchVal);
+    });
+  }
+
+  if (countBadge) {
+    countBadge.innerText = searchVal ? `${displayQueue.length} / ${queue.length} Users` : `${queue.length} Users`;
+  }
+
+  if (displayQueue.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-dim); padding: 2rem;">${searchVal ? 'No matching registered patients found.' : 'No registered users. Place finger on sensor to register a user.'}</td></tr>`;
     return;
   }
 
@@ -804,7 +821,7 @@ function renderQueue(queue) {
   const activeDeviceId = latestTelemetry?.device_id;
   const fingerActive = latestTelemetry?.finger_detected;
 
-  tbody.innerHTML = queue.map(p => {
+  tbody.innerHTML = displayQueue.map(p => {
     const name = `${p.patient_details?.first_name || ''} ${p.patient_details?.last_name || ''}`.trim() || p.patient_id;
     const isActive = (activePatientId && p.patient_id === activePatientId) ||
                      (p.device_id && p.device_id === activeDeviceId && fingerActive);
@@ -830,7 +847,7 @@ function renderQueue(queue) {
         <td>
           ${deviceBadge || '<span style="color:var(--text-muted); font-size:0.8rem;">Standby</span>'}
         </td>
-        <td>
+        <td style="text-align: right;">
           <button class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.75rem;" onclick="openUserProfileModal('${p.patient_id}')">
             View Vitals Profile
           </button>
