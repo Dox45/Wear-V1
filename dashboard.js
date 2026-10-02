@@ -280,13 +280,13 @@ function renderComparison(comparison) {
   const countBadge = document.getElementById("comparisonCountBadge");
   if (countBadge) countBadge.innerText = `${comparison.length} Patients`;
 
-  if (!comparisonChart) return;
-
-  comparisonChart.data.labels = comparison.map(c => c.full_name || c.patient_id);
-  comparisonChart.data.datasets[0].data = comparison.map(c => c.severity_score);
-  comparisonChart.data.datasets[0].backgroundColor = comparison.map(c => SEVERITY_COLORS[c.esi_level] || '#64748b');
-  comparisonChart.data.datasets[1].data = comparison.map(c => c.intake_score);
-  comparisonChart.update('none');
+  if (comparisonChart) {
+    comparisonChart.data.labels = comparison.map(c => c.full_name || c.patient_id);
+    comparisonChart.data.datasets[0].data = comparison.map(c => c.severity_score);
+    comparisonChart.data.datasets[0].backgroundColor = comparison.map(c => SEVERITY_COLORS[c.esi_level] || '#64748b');
+    comparisonChart.data.datasets[1].data = comparison.map(c => c.intake_score);
+    comparisonChart.update('none');
+  }
 
   const attendEl = document.getElementById("comparisonAttendFirst");
   if (attendEl) {
@@ -299,6 +299,156 @@ function renderComparison(comparison) {
         ${top.deviation_flags?.length ? ` — ${top.deviation_flags.join(', ')}` : ''}.`;
     }
   }
+
+  // Update Full Comparison Modal Table in real-time if open
+  const fullModal = document.getElementById("fullComparisonModal");
+  if (fullModal && fullModal.classList.contains("active")) {
+    renderFullComparisonTable();
+  }
+}
+
+// ─── Full Triage Comparison Matrix (All Patients View) ─────────────────────
+let isChartExpanded = false;
+
+function toggleChartHeight() {
+  const container = document.getElementById("comparisonChartContainer");
+  const btn = document.getElementById("btnToggleChartHeight");
+  if (!container) return;
+
+  isChartExpanded = !isChartExpanded;
+  if (isChartExpanded) {
+    const targetHeight = Math.max(480, (window._comparisonData?.length || 0) * 32);
+    container.style.height = `${targetHeight}px`;
+    if (btn) btn.innerHTML = `<i class="fa-solid fa-compress"></i> Collapse Graph Height`;
+  } else {
+    container.style.height = "340px";
+    if (btn) btn.innerHTML = `<i class="fa-solid fa-expand"></i> Expand Graph Height`;
+  }
+  if (comparisonChart) comparisonChart.resize();
+}
+
+function openFullComparisonModal() {
+  const modal = document.getElementById("fullComparisonModal");
+  if (modal) {
+    modal.classList.add("active");
+    renderFullComparisonTable();
+  }
+}
+
+function closeFullComparisonModal() {
+  const modal = document.getElementById("fullComparisonModal");
+  if (modal) modal.classList.remove("active");
+}
+
+function resetFullComparisonFilters() {
+  const searchInput = document.getElementById("fullComparisonSearch");
+  const esiSelect = document.getElementById("fullComparisonEsiFilter");
+  if (searchInput) searchInput.value = "";
+  if (esiSelect) esiSelect.value = "";
+  renderFullComparisonTable();
+}
+
+function filterFullComparisonTable() {
+  renderFullComparisonTable();
+}
+
+function renderFullComparisonTable() {
+  const tbody = document.getElementById("fullComparisonTableBody");
+  const modalBadge = document.getElementById("fullModalCountBadge");
+  const summaryText = document.getElementById("fullComparisonSummaryText");
+  if (!tbody) return;
+
+  const data = window._comparisonData || [];
+  if (modalBadge) modalBadge.innerText = `${data.length} Patients Total`;
+
+  const searchVal = (document.getElementById("fullComparisonSearch")?.value || "").toLowerCase().trim();
+  const esiVal = document.getElementById("fullComparisonEsiFilter")?.value || "";
+
+  let filtered = data.filter(item => {
+    if (esiVal && String(item.esi_level) !== String(esiVal)) return false;
+    if (searchVal) {
+      const text = `${item.patient_id} ${item.full_name} ${item.severity} ${(item.deviation_flags || []).join(' ')}`.toLowerCase();
+      if (!text.includes(searchVal)) return false;
+    }
+    return true;
+  });
+
+  if (summaryText) {
+    summaryText.innerText = `Displaying ${filtered.length} of ${data.length} triaged patients in comparison priority order`;
+  }
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="7" style="text-align: center; color: var(--text-dim); padding: 2.5rem;">
+          No matching patients found in triage comparison matrix.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((c, idx) => {
+    const rank = data.indexOf(c) + 1;
+    const esiColor = SEVERITY_COLORS[c.esi_level] || '#64748b';
+    const latest = c.latest_vitals || {};
+    
+    // Format vitals
+    const bpmStr = latest.bpm ? `${latest.bpm} <span style="font-size:0.72rem; color:var(--text-muted);">BPM</span>` : '--';
+    const spo2Str = latest.spo2 ? `${latest.spo2}% <span style="font-size:0.72rem; color:var(--text-muted);">SpO₂</span>` : '--';
+    
+    let tempStr = '--';
+    if (latest.temp_body_c) {
+      const rawT = latest.temp_body_c;
+      const coreT = rawT < 38.0 ? (rawT + 2.5).toFixed(1) : rawT.toFixed(1);
+      tempStr = `${rawT.toFixed(1)}°C <span style="font-size:0.72rem; color:var(--text-muted);" title="Core temp normalized with +2.5°C constant">(Core ${coreT}°C)</span>`;
+    }
+
+    const bpStr = (latest.sbp && latest.dbp) ? `${latest.sbp}/${latest.dbp} <span style="font-size:0.72rem; color:var(--text-muted);">mmHg</span>` : '--';
+
+    const flagsHtml = (c.deviation_flags && c.deviation_flags.length > 0)
+      ? c.deviation_flags.map(f => `<span style="display:inline-block; font-size:0.72rem; background:rgba(220,38,38,0.1); color:#dc2626; border:1px solid rgba(220,38,38,0.2); border-radius:4px; padding:2px 6px; margin:2px;">${f}</span>`).join('')
+      : '<span style="font-size:0.75rem; color:var(--text-dim);">Vitals within normal limits</span>';
+
+    return `
+      <tr style="border-bottom: 1px solid var(--border);">
+        <td style="text-align: center; font-weight: 700; font-size: 0.9rem; color: ${rank <= 3 ? '#dc2626' : 'var(--text-main)'};">
+          #${rank}
+        </td>
+        <td>
+          <div style="font-weight: 600; font-size: 0.9rem;">${c.full_name || c.patient_id}</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">${c.patient_id} ${c.device_id ? `• [${c.device_id}]` : ''}</div>
+        </td>
+        <td>
+          <span class="esi-tag esi-${c.esi_level}" style="font-size: 0.75rem;">
+            ESI ${c.esi_level} — ${c.severity}
+          </span>
+        </td>
+        <td>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <div style="flex: 1; background: var(--border); height: 8px; border-radius: 4px; overflow: hidden;">
+              <div style="width: ${c.severity_score}%; background: ${esiColor}; height: 100%; border-radius: 4px;"></div>
+            </div>
+            <span style="font-weight: 700; font-size: 0.85rem; color: ${esiColor}; min-width: 32px; text-align: right;">${c.severity_score}</span>
+          </div>
+          <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 2px;">Intake score: ${c.intake_score}</div>
+        </td>
+        <td style="font-size: 0.82rem; line-height: 1.4;">
+          <div><strong>HR:</strong> ${bpmStr} | <strong>SpO₂:</strong> ${spo2Str}</div>
+          <div><strong>Temp:</strong> ${tempStr}</div>
+          <div><strong>BP:</strong> ${bpStr}</div>
+        </td>
+        <td>
+          ${flagsHtml}
+        </td>
+        <td style="text-align: right;">
+          <button class="btn-secondary" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;" onclick="closeFullComparisonModal(); openUserProfileModal('${c.patient_id}');">
+            <i class="fa-solid fa-chart-line"></i> Profile
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
 }
 
 // Connect to Server-Sent Events (SSE) stream

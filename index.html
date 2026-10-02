@@ -298,21 +298,94 @@
 
     <!-- Triage Severity Comparison (Cross-Patient Comparison Graph) -->
     <div class="glass-panel" style="padding: 1.5rem; margin-top: 1.5rem;">
-      <div class="panel-header">
-        <div class="panel-title">
+      <div class="panel-header" style="flex-wrap: wrap; gap: 0.75rem;">
+        <div class="panel-title" style="display: flex; align-items: center; gap: 0.5rem;">
+          <i class="fa-solid fa-chart-column" style="color: var(--primary);"></i>
           Triage Summary — Severity Comparison
         </div>
-        <span class="esi-tag esi-1" id="comparisonCountBadge">0 Patients</span>
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <span class="esi-tag esi-1" id="comparisonCountBadge">0 Patients</span>
+          <button class="btn-primary" style="font-size: 0.8rem; padding: 0.4rem 0.85rem;" onclick="openFullComparisonModal()">
+            <i class="fa-solid fa-list-ol"></i> View Full Triage Comparison for All Patients
+          </button>
+        </div>
       </div>
-      <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.5rem 0 1rem 0;">
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.25rem 0 1rem 0;">
         Who is more severe and should be attended to first — blending intake acuity (ESI) with live deviation of each user's latest vitals from clinical normal ranges.
       </p>
-      <div style="height: 300px; position: relative;">
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+        <span style="font-size: 0.78rem; color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;">Cross-Patient Severity Graph</span>
+        <button class="btn-secondary" id="btnToggleChartHeight" style="font-size: 0.75rem; padding: 0.25rem 0.6rem;" onclick="toggleChartHeight()">
+          <i class="fa-solid fa-expand"></i> Expand Graph Height
+        </button>
+      </div>
+
+      <div id="comparisonChartContainer" style="height: 340px; position: relative; transition: height 0.3s ease;">
         <canvas id="comparisonChart"></canvas>
       </div>
-      <div style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-muted);" id="comparisonAttendFirst"></div>
+
+      <div style="margin-top: 1rem; font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem 1rem; background: var(--surface-hover); border-radius: var(--radius-md); border-left: 4px solid var(--crimson);" id="comparisonAttendFirst"></div>
     </div>
 
+  </div>
+
+  <!-- Full Triage Comparison Modal (All Patients Matrix) -->
+  <div class="modal-overlay" id="fullComparisonModal">
+    <div class="modal-card" style="max-width: 1150px; width: 95%;">
+      <div class="modal-header">
+        <div class="modal-title" style="display: flex; align-items: center; gap: 0.75rem;">
+          <i class="fa-solid fa-scale-balanced" style="color: var(--primary);"></i>
+          Full Cross-Patient Triage Comparison Matrix
+        </div>
+        <button class="modal-close" onclick="closeFullComparisonModal()">&times;</button>
+      </div>
+      
+      <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <span>Physiological priority ranking across all triaged patients (ESI Levels 1–5). Blends intake score with real-time vital deviations.</span>
+        <span class="esi-tag esi-1" id="fullModalCountBadge">0 Patients</span>
+      </div>
+
+      <!-- Quick Search & ESI Filter Bar inside Modal -->
+      <div style="display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; background: var(--surface-hover); padding: 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--border);">
+        <input type="text" id="fullComparisonSearch" class="form-input" placeholder="Search by patient name, ID, or flags..." style="max-width: 320px;" oninput="filterFullComparisonTable()">
+        <select id="fullComparisonEsiFilter" class="form-select" style="max-width: 220px;" onchange="filterFullComparisonTable()">
+          <option value="">All ESI Triage Levels (1–5)</option>
+          <option value="1">ESI Level 1 — CRITICAL</option>
+          <option value="2">ESI Level 2 — SEVERE</option>
+          <option value="3">ESI Level 3 — MODERATE</option>
+          <option value="4">ESI Level 4 — LOW</option>
+          <option value="5">ESI Level 5 — MINIMAL</option>
+        </select>
+        <button class="btn-secondary" style="margin-left: auto; font-size: 0.8rem;" onclick="resetFullComparisonFilters()">
+          <i class="fa-solid fa-rotate-left"></i> Reset Filters
+        </button>
+      </div>
+
+      <div style="max-height: 62vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;">
+        <table class="data-table" style="width: 100%; border-collapse: collapse;">
+          <thead style="position: sticky; top: 0; background: var(--bg-dark); z-index: 10; border-bottom: 2px solid var(--border);">
+            <tr>
+              <th style="width: 60px; text-align: center;">Rank</th>
+              <th>Patient / Details</th>
+              <th style="min-width: 130px;">ESI & Severity</th>
+              <th style="min-width: 170px;">Severity Score (0–100)</th>
+              <th style="min-width: 200px;">Latest Telemetry Vitals</th>
+              <th style="min-width: 220px;">Deviation Flags & Clinical Risks</th>
+              <th style="text-align: right; min-width: 100px;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="fullComparisonTableBody">
+            <!-- Rendered dynamically in dashboard.js -->
+          </tbody>
+        </table>
+      </div>
+
+      <div style="margin-top: 1.25rem; display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 0.78rem; color: var(--text-dim);" id="fullComparisonSummaryText">Showing all patients</span>
+        <button class="btn-secondary" onclick="closeFullComparisonModal()">Close Comparison Window</button>
+      </div>
+    </div>
   </div>
 
   <!-- Touch-Triggered User Registration Modal -->
