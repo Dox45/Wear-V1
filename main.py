@@ -52,9 +52,8 @@ from database import (
     clear_all_demo_patients,
 )
 
-# Initialize SQLite database on startup and purge old demo patients
+# Initialize SQLite database on startup
 init_db()
-clear_all_demo_patients()
 
 # Initialize Kafka topics in background
 init_kafka_topics()
@@ -91,7 +90,7 @@ realtime_history: Deque[dict] = deque(maxlen=REALTIME_SIZE)
 tenmin_history:   Deque[dict] = deque(maxlen=TEN_MIN_SIZE)
 latest_reading:   Optional[dict] = None
 calibrations:     Dict[str, dict] = {}
-patient_store:    Dict[str, dict] = {}  # patient_id -> patient record
+patient_store:    Dict[str, dict] = {p["patient_id"]: p for p in get_all_patients()}  # Synchronized with SQLite DB
 sse_subscribers:  List[asyncio.Queue] = []
 touch_onset_times: Dict[str, float] = {} # device_id -> onset timestamp in seconds
 

@@ -33,12 +33,40 @@ HIGH_RISK_CONDITIONS = [
 ]
 
 
+TEMP_OFFSET_NORMALIZATION_C = 2.5  # +2.5°C skin-to-core temperature normalization offset
+
+
+def get_effective_core_temp(vitals: Dict[str, Any]) -> Optional[float]:
+    """
+    Returns core body temperature in °C.
+    If 'temp_core_c' or 'core_temperature' is specified, uses it directly.
+    Otherwise, if raw skin sensor temperature ('temperature' or 'temp_body_c') is provided
+    in the raw sensor baseline range (30.0°C - 37.9°C), applies the +2.5°C normalization offset.
+    """
+    if vitals.get("temp_core_c") is not None:
+        return float(vitals["temp_core_c"])
+    if vitals.get("core_temperature") is not None:
+        return float(vitals["core_temperature"])
+
+    raw_temp = vitals.get("temperature") or vitals.get("temp_body_c")
+    if raw_temp is None:
+        return None
+
+    if vitals.get("is_normalized") or raw_temp >= 38.0:
+        return float(raw_temp)
+
+    if 30.0 <= raw_temp < 38.0:
+        return round(float(raw_temp) + TEMP_OFFSET_NORMALIZATION_C, 1)
+
+    return float(raw_temp)
+
+
 def check_safety_overrides(vitals: Dict[str, Any], symptoms: List[str]) -> Tuple[bool, int, str]:
     """
     Evaluates physiological vitals against critical clinical emergency thresholds.
     Returns (tripped, force_esi_level, reason) to guarantee urgent escalation.
     """
-    temp_c = vitals.get("temperature") or vitals.get("temp_body_c")
+    temp_c = get_effective_core_temp(vitals)
     sbp = vitals.get("sbp") or vitals.get("blood_pressure_systolic")
     dbp = vitals.get("dbp") or vitals.get("blood_pressure_diastolic")
     spo2 = vitals.get("spo2") or vitals.get("oxygen_saturation")
@@ -79,7 +107,7 @@ def compute_acuity(patient_record: Dict[str, Any]) -> Dict[str, Any]:
     """
     Computes patient acuity score (0-100 raw score -> ESI 1-5 level).
     """
-    vitals = patient_record.get("latest_vitals", {}) or patient_record.get("intake_vitals", {})
+    vitals = patient_record.get("latest_vitals", {}) or patient_record.get("intake_vitals", {}) or patient_record.get("vital_signs", {})
     symptoms = patient_record.get("symptoms", [])
     history = patient_record.get("medical_history", [])
     pain_level = patient_record.get("pain_level", 0) or 0
@@ -102,11 +130,11 @@ def compute_acuity(patient_record: Dict[str, Any]) -> Dict[str, Any]:
         contributing_factors.append(f"Moderate Pain ({pain_level}/10)")
 
     # Vitals Points (0 to 40 pts)
-    temp_c = vitals.get("temperature") or vitals.get("temp_body_c")
+    temp_c = get_effective_core_temp(vitals)
     if temp_c:
         if temp_c > 39.5 or temp_c < 35.5:
             score += 15
-            contributing_factors.append(f"Abnormal Temperature ({temp_c:.1f}°C)")
+            contributing_factors.append(f"Abnormal Core Temperature ({temp_c:.1f}°C)")
         elif temp_c > 38.0:
             score += 8
             contributing_factors.append(f"Elevated Temperature ({temp_c:.1f}°C)")

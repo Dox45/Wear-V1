@@ -21,7 +21,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("DBMigrator")
 
-DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.path.dirname(__file__), "biowear_triage.db"))
+def resolve_db_path() -> str:
+    env_path = os.getenv("SQLITE_DB_PATH")
+    if env_path:
+        return env_path
+    for mount in ["/data", "/var/data"]:
+        if os.path.exists(mount) and os.access(mount, os.W_OK):
+            return os.path.join(mount, "biowear_triage.db")
+    return os.path.join(os.path.dirname(__file__), "biowear_triage.db")
+
+DB_PATH = resolve_db_path()
 
 # Required Schema Definitions
 TABLE_SCHEMAS = {
@@ -133,7 +142,7 @@ INDEXES = [
 
 
 def run_migrations() -> bool:
-    """Runs database verification, table auto-creation, column migrations, and index setup."""
+    """Runs database verification, table auto-creation, column migrations, index setup, and benchmark seeding."""
     logger.info(f"Target Database File: {DB_PATH}")
 
     try:
@@ -165,7 +174,7 @@ def run_migrations() -> bool:
             cursor.execute(index_sql)
             logger.info(f"  ✓ Index verified: {index_name}")
 
-        logger.info("Step 4/4: Verifying admin doctor seed account...")
+        logger.info("Step 4/4: Verifying admin doctor seed account & 35 benchmark patients...")
         cursor.execute("SELECT COUNT(*) FROM doctors")
         if cursor.fetchone()[0] == 0:
             from database import hash_password
@@ -179,8 +188,18 @@ def run_migrations() -> bool:
         else:
             logger.info("  ✓ Doctor accounts present.")
 
+        cursor.execute("SELECT COUNT(*) FROM patients")
+        p_count = cursor.fetchone()[0]
         conn.commit()
         conn.close()
+
+        if p_count < 35:
+            logger.info(f"  + Seeding 35 benchmark patients into SQLite (Current: {p_count})...")
+            from database import save_patient, save_reading
+            from seed_data import seed_35_patients
+            seed_35_patients(save_patient, save_reading)
+        else:
+            logger.info(f"  ✓ {p_count} patient records verified in database.")
 
         logger.info("✅ Database migration and verification successfully completed!")
         return True

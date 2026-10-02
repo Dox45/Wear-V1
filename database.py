@@ -17,7 +17,16 @@ from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger("Database")
 
-DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.path.dirname(__file__), "biowear_triage.db"))
+def resolve_db_path() -> str:
+    env_path = os.getenv("SQLITE_DB_PATH")
+    if env_path:
+        return env_path
+    for mount in ["/data", "/var/data"]:
+        if os.path.exists(mount) and os.access(mount, os.W_OK):
+            return os.path.join(mount, "biowear_triage.db")
+    return os.path.join(os.path.dirname(__file__), "biowear_triage.db")
+
+DB_PATH = resolve_db_path()
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -58,7 +67,7 @@ def verify_password(password: str, hashed: str) -> bool:
 def init_db() -> bool:
     """
     Initializes SQLite database tables using 'CREATE TABLE IF NOT EXISTS'.
-    Auto-seeds a default doctor admin account if doctors table is empty.
+    Auto-seeds a default doctor admin account and 35 benchmark patients if missing.
     """
     try:
         conn = get_db_connection()
@@ -177,10 +186,22 @@ def init_db() -> bool:
             """, ("admin_doc", default_pass_hash, "Dr. Somtoo Okonkwo", "MD-84920-NG", "Emergency Triage", now_iso))
             logger.info("Default doctor account created: admin_doc / Doctor123!")
 
+        # Check if benchmark patients count is less than 35
+        cursor.execute("SELECT COUNT(*) FROM patients")
+        p_count = cursor.fetchone()[0]
         conn.commit()
         conn.close()
+
+        if p_count < 35:
+            logger.info(f"Current patient count is {p_count}. Seeding 35 benchmark users into SQLite database...")
+            from seed_data import seed_35_patients
+            seed_35_patients(save_patient, save_reading)
+
         logger.info(f"SQLite Database initialized successfully at: {DB_PATH}")
         return True
+    except Exception as e:
+        logger.error(f"Error initializing SQLite database: {e}")
+        return False
     except Exception as e:
         logger.error(f"Error initializing SQLite database: {e}")
         return False
